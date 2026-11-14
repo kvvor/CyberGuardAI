@@ -84,10 +84,13 @@ Build, unit tests and go vet pass from backend/. Tests cover hashing, policy,
 synthetic EML/MSG parsing, scoring, unauthorized access, Origin, rate limiting,
 demo, PDF/Kazakh glyphs, and mocked OpenAI success/refusal/invalid-output/retries.
 
-The PostgreSQL lifecycle test skips without TEST_DATABASE_URL, which must name an
-isolated migrated test database. Migrations, concurrent redemption, persistence,
-dashboard queries and end-to-end ownership have not been exercised on PostgreSQL.
-No paid OpenAI test ran.
+PostgreSQL 18 was available locally. Migrations were applied to `cyberguard` and
+the isolated `cyberguard_test` database. The PostgreSQL lifecycle and HTTP tests
+passed against `cyberguard_test`, including concurrent temporary-credential
+redemption, activation, password changes, session revocation, EML/MSG/pasted
+analysis, history, dashboard aggregates, report export, demo separation, and
+two-user ownership checks. Integration tests explicitly reject any database
+other than `cyberguard_test`. No paid OpenAI test ran.
 
 The original complete MVP is not yet finished. Outstanding: database integration
 and broader security tests; repository/service extraction from analysis handlers;
@@ -102,7 +105,8 @@ configure session expiry. PostgreSQL cleanup execution remains unverified.
 
 Current validation: PostgreSQL service is running and pg_isready succeeds. Administrator
 authentication is pending local secure entry. See local-windows.md for exact setup
-and startup commands. The HTTP integration suite covers two-user isolation, uploads,
-activation, history, statistics, exports and password changes, but is not yet executed
-against PostgreSQL. Race tests require a missing GCC toolchain. OpenAPI validation
-is automated and passing. No paid OpenAI call or Docker operation was performed.
+and startup commands. The HTTP integration suite was executed against PostgreSQL
+and passed. `go build ./...`, `go test ./...`, and `go vet ./...` passed. The race
+suite is the remaining validation blocker because this Windows environment has no
+GCC toolchain. OpenAPI validation is automated and passing. No paid OpenAI call or
+Docker operation was performed.
