@@ -74,7 +74,7 @@ func run() error {
 			}
 		}
 	}()
-	handler := (&api.Server{Auth: service, Origin: origin, Secure: os.Getenv("COOKIE_SECURE") == "true"}).Router()
+	handler := (&api.Server{Auth: service, Origin: origin, Secure: os.Getenv("COOKIE_SECURE") == "true", PublicRegistration: os.Getenv("PUBLIC_REGISTRATION_ENABLED") == "true"}).Router()
 	srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	errs := make(chan error, 1)
 	go func() { slog.Info("HTTP server listening", "address", addr); errs <- srv.ListenAndServe() }()

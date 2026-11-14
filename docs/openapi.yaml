@@ -8,6 +8,41 @@ servers:
 security:
   - session: []
 paths:
+  /auth/register:
+    post:
+      operationId: register
+      security: []
+      description: Requires PUBLIC_REGISTRATION_ENABLED=true, the allowed Origin, and application/json. New and duplicate emails receive identical 202 responses. Creates active accounts without sessions; never changes existing accounts. Shares the login IP rate limit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, display_name, password, confirm_password]
+              properties:
+                email: {type: string, format: email, description: Trimmed and lowercased; normalized maximum 254 bytes}
+                display_name: {type: string, description: Trimmed nonempty UTF-8; maximum 200 bytes; no control characters}
+                password: {type: string, format: password, minLength: 12, description: Maximum 1024 UTF-8 bytes; weak passwords rejected}
+                confirm_password: {type: string, format: password, description: Must exactly match password}
+      responses:
+        '202':
+          description: Identical acknowledgment for new and existing accounts; proceed to login
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, message]
+                properties:
+                  code: {type: string, enum: [REGISTRATION_ACCEPTED]}
+                  message: {type: string}
+        '400': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /health:
     get:
       security: []
@@ -27,7 +62,7 @@ paths:
                 properties:
                   languages: {type: array, items: {type: string}}
                   max_email_size: {type: integer}
-                  public_signup: {type: boolean, enum: [false]}
+                  public_signup: {type: boolean, description: Whether public registration is enabled; false by default}
   /analyses:
     post:
       operationId: createAnalysis

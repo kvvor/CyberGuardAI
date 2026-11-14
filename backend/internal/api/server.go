@@ -18,11 +18,12 @@ import (
 )
 
 type Server struct {
-	Auth     *auth.Service
-	Origin   string
-	Secure   bool
-	mu       sync.Mutex
-	attempts map[string]bucket
+	PublicRegistration bool
+	Auth               *auth.Service
+	Origin             string
+	Secure             bool
+	mu                 sync.Mutex
+	attempts           map[string]bucket
 }
 type bucket struct {
 	count int
@@ -75,9 +76,10 @@ func (s *Server) Router() http.Handler {
 		JSON(w, 200, map[string]string{"status": "ok"})
 	}).Methods("GET")
 	r.HandleFunc("/api/v1/config/public", func(w http.ResponseWriter, r *http.Request) {
-		JSON(w, 200, map[string]any{"languages": []string{"en", "ru", "kk"}, "max_email_size": 10 << 20, "public_signup": false})
+		JSON(w, 200, map[string]any{"languages": []string{"en", "ru", "kk"}, "max_email_size": 10 << 20, "public_signup": s.PublicRegistration})
 	}).Methods("GET")
 	r.HandleFunc("/api/v1/auth/login", s.login).Methods("POST")
+	r.HandleFunc("/api/v1/auth/register", s.register).Methods("POST")
 	p := r.PathPrefix("/api/v1").Subrouter()
 	p.Use(s.session)
 	s.analysisRoutes(p)

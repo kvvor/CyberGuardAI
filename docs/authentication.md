@@ -3,7 +3,9 @@
 Create accounts with `cyberguardctl users create --email EMAIL --name NAME`.
 The CLI generates a 256-bit temporary secret, prints it once to an interactive
 terminal, and stores only an Argon2id hash. Deliver credentials out of band over
-a trusted channel. No signup endpoint or default credentials exist.
+a trusted channel. No default credentials exist. Optional website registration
+uses POST /api/v1/auth/register when PUBLIC_REGISTRATION_ENABLED=true (disabled
+by default), creating active accounts with permanent passwords.
 
 Temporary login consumes the credential under a PostgreSQL row lock and issues
 a 15-minute setup session. Activation invalidates all old sessions and establishes

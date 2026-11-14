@@ -19,6 +19,30 @@ Proxy /api from Vite, preserving Origin. Exact-origin credentialed CORS is suppo
 
 ## Authentication
 
+Website registration is optional. Set `PUBLIC_REGISTRATION_ENABLED=true` in the
+process environment and restart to enable it; the default is false. The startup
+scripts load only database URLs from `.env.local`. Public configuration exposes
+the flag as `public_signup` for frontend registration visibility.
+
+POST /api/v1/auth/register accepts JSON email, display_name, password, and
+confirm_password. Send the allowed Origin. Emails are trimmed/lowercased; names
+are trimmed nonempty UTF-8 without controls (maximum 200 bytes). Passwords follow
+the existing 12-character minimum and 1024-byte maximum. Unknown fields, weak
+passwords and mismatched confirmation are rejected.
+
+Valid requests return identical 202 `{code: REGISTRATION_ACCEPTED, message: ...}`
+acknowledgments for new and existing emails. This does not prove account creation.
+Redirect to login: registration creates no session. New accounts are active and
+can log in immediately. Duplicate requests never modify existing accounts,
+including disabled accounts and accounts awaiting CLI activation.
+
+Errors: REGISTRATION_DISABLED / ORIGIN_INVALID (403), INVALID_REQUEST /
+INVALID_REGISTRATION_INPUT (400), UNSUPPORTED_MEDIA_TYPE (415), RATE_LIMITED
+(429 with Retry-After). Registration shares the 10-attempt/minute IP login limit,
+bounded JSON input, and the global request concurrency limit. Limits are local to
+one server process; email ownership verification and distributed anti-bot controls
+are not implemented. CLI provisioning, reset, disable and activation remain intact.
+
 Use /api/v1 URLs with credentials: 'include'. Login accepts email/password and
 returns user {id,email,display_name}, password_change_required and csrf_token.
 Keep CSRF in memory and send X-CSRF-Token on authenticated mutations. Cookies are
