@@ -1,0 +1,382 @@
+package api
+
+import (
+	"bytes"
+	"cyberguard.local/backend/internal/auth"
+	"cyberguard.local/backend/internal/demo"
+	"cyberguard.local/backend/internal/detection"
+	"cyberguard.local/backend/internal/emailparser"
+	ai "cyberguard.local/backend/internal/openai"
+	"cyberguard.local/backend/internal/reports"
+	"encoding/json"
+	"fmt"
+	"github.com/go-pdf/fpdf"
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
+	"io"
+	"net/http"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type stored struct {
+	ID              string            `json:"id"`
+	Mode            string            `json:"mode"`
+	Created         time.Time         `json:"created_at"`
+	Report          detection.Report  `json:"report"`
+	AI              *ai.Assessment    `json:"ai_assessment,omitempty"`
+	Status          string            `json:"status"`
+	Explanations    map[string]string `json:"explanations"`
+	Recommendations map[string]string `json:"recommendations"`
+}
+
+func (s *Server) analysisRoutes(p *mux.Router) {
+	p.HandleFunc("/demo/samples", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, demo.Samples()) }).Methods("GET")
+	p.HandleFunc("/analyses", s.create).Methods("POST")
+	p.HandleFunc("/analyses", s.history).Methods("GET")
+	p.HandleFunc("/analyses/{id}", s.detail).Methods("GET", "DELETE")
+	p.HandleFunc("/analyses/{id}/export", s.detail).Methods("GET")
+	p.HandleFunc("/dashboard/stats", s.stats).Methods("GET")
+}
+func owner(r *http.Request) string { return r.Context().Value(key(0)).(auth.Session).User.ID }
+func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, (10<<20)+65536)
+	var e emailparser.Email
+	var err error
+	consent := false
+	demoID := ""
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err = r.ParseMultipartForm(1 << 20); err != nil {
+			fail(w, r, 400, "INVALID_UPLOAD")
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+		consent = r.FormValue("external_processing_consent") == "true"
+		f, h, x := r.FormFile("file")
+		if x != nil {
+			fail(w, r, 400, "INVALID_UPLOAD")
+			return
+		}
+		defer f.Close()
+		b, x := io.ReadAll(io.LimitReader(f, (10<<20)+1))
+		if x != nil {
+			fail(w, r, 400, "INVALID_UPLOAD")
+			return
+		}
+		if strings.HasSuffix(strings.ToLower(h.Filename), ".msg") {
+			e, err = emailparser.ParseMSG(b, h.Filename)
+		} else {
+			e, err = emailparser.Parse(b, h.Filename, "eml", "", "")
+		}
+	} else {
+		var in struct {
+			Source  string `json:"source_type"`
+			Text    string `json:"text"`
+			Sender  string `json:"sender"`
+			Subject string `json:"subject"`
+			Consent bool   `json:"external_processing_consent"`
+			DemoID  string `json:"demo_sample_id"`
+		}
+		d := json.NewDecoder(r.Body)
+		d.DisallowUnknownFields()
+		if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF || (in.Source != "paste" && in.Source != "demo") {
+			fail(w, r, 400, "INVALID_REQUEST")
+			return
+		}
+		e, err = emailparser.Parse([]byte(in.Text), "", "paste", in.Sender, in.Subject)
+		consent = in.Consent
+		if in.Source == "demo" {
+			demoID = in.DemoID
+			if demoID == "" {
+				fail(w, r, 400, "UNKNOWN_DEMO_SAMPLE")
+				return
+			}
+		}
+	}
+	if err != nil {
+		fail(w, r, 400, err.Error())
+		return
+	}
+	report := detection.Analyze(e)
+	mode := "live"
+	var assessment *ai.Assessment
+	if demoID != "" {
+		report, err = demo.Analyze(demoID)
+		if err != nil {
+			fail(w, r, 400, "UNKNOWN_DEMO_SAMPLE")
+			return
+		}
+		mode = "demo"
+		e = report.Email
+	} else if consent {
+		client := ai.Client{Key: os.Getenv("OPENAI_API_KEY"), Model: os.Getenv("OPENAI_MODEL")}
+		a, x := client.Assess(r.Context(), report)
+		if x != nil {
+			report.AIStatus = "unavailable"
+			report.Limitations = append(report.Limitations, "OPENAI_UNAVAILABLE")
+		} else {
+			assessment = &a
+			report.AIStatus = "completed"
+			detection.ApplyContext(&report, a.Verdict, a.Supporting, a.Contradictory)
+		}
+	}
+	report.Email.Text = ""
+	report.Email.HTML = ""
+	report.Email.Headers = nil
+	row := stored{ID: uuid.NewString(), Mode: mode, Created: time.Now().UTC(), Report: report, AI: assessment}
+	row.Status = "partial"
+	if mode == "demo" || assessment != nil {
+		row.Status = "complete"
+	}
+	row.Explanations = map[string]string{}
+	row.Recommendations = map[string]string{}
+	for _, lang := range []string{"en", "ru", "kk"} {
+		row.Explanations[lang], row.Recommendations[lang] = detection.Narrative(lang)
+	}
+	if assessment != nil {
+		row.Explanations = assessment.Explanations
+		row.Recommendations = assessment.Recommendations
+	}
+	b, err := json.Marshal(row)
+	if err != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	_, err = s.Auth.DB.Exec(r.Context(), `INSERT INTO analyses(id,user_id,mode,status,verdict,risk_score,risk_level,subject,sender,scoring_version,report,created_at) VALUES($1,$2,$3,$12,$4,$5,$6,$7,$8,$9,$10,$11)`, row.ID, owner(r), row.Mode, report.Verdict, report.Score, report.Level, e.Subject, e.Sender, report.Version, b, row.Created, row.Status)
+	if err != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	JSON(w, 201, row)
+}
+func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if _, e := uuid.Parse(id); e != nil {
+		fail(w, r, 404, "NOT_FOUND")
+		return
+	}
+	if r.Method == "DELETE" {
+		tag, e := s.Auth.DB.Exec(r.Context(), `DELETE FROM analyses WHERE id=$1 AND user_id=$2`, id, owner(r))
+		if e != nil {
+			fail(w, r, 500, "INTERNAL_ERROR")
+			return
+		}
+		if tag.RowsAffected() == 0 {
+			fail(w, r, 404, "NOT_FOUND")
+			return
+		}
+		w.WriteHeader(204)
+		return
+	}
+	var row stored
+	var b []byte
+	err := s.Auth.DB.QueryRow(r.Context(), `SELECT id,mode,created_at,report FROM analyses WHERE id=$1 AND user_id=$2`, id, owner(r)).Scan(&row.ID, &row.Mode, &row.Created, &b)
+	if err != nil {
+		fail(w, r, 404, "NOT_FOUND")
+		return
+	}
+	if json.Unmarshal(b, &row) != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	if strings.HasSuffix(r.URL.Path, "/export") {
+		format := r.URL.Query().Get("format")
+		lang := r.URL.Query().Get("lang")
+		if lang == "" {
+			lang = "en"
+		}
+		if lang != "en" && lang != "ru" && lang != "kk" {
+			fail(w, r, 400, "INVALID_LANGUAGE")
+			return
+		}
+		if format == "pdf" {
+			data, e := pdfReport(row, lang)
+			if e != nil {
+				fail(w, r, 500, "EXPORT_FAILED")
+				return
+			}
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", `attachment; filename="cyberguard-report.pdf"`)
+			w.Write(data)
+			return
+		}
+		if format != "json" {
+			fail(w, r, 400, "INVALID_FORMAT")
+			return
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="cyberguard-report.json"`)
+	}
+	JSON(w, 200, row)
+}
+func (s *Server) history(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	page, _ := strconv.Atoi(q.Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(q.Get("page_size"))
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	if page > 100000 {
+		fail(w, r, 400, "INVALID_PAGE")
+		return
+	}
+	mode := q.Get("mode")
+	if mode == "" {
+		mode = "live"
+	}
+	rows, e := s.Auth.DB.Query(r.Context(), `SELECT id,mode,created_at,report FROM analyses WHERE user_id=$1 AND mode=$2 AND ($3='' OR verdict=$3) AND (subject ILIKE $4 OR sender ILIKE $4) ORDER BY created_at DESC,id LIMIT $5 OFFSET $6`, owner(r), mode, q.Get("verdict"), "%"+q.Get("search")+"%", limit, (page-1)*limit)
+	if e != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	defer rows.Close()
+	items := []stored{}
+	for rows.Next() {
+		var x stored
+		var b []byte
+		if rows.Scan(&x.ID, &x.Mode, &x.Created, &b) != nil || json.Unmarshal(b, &x) != nil {
+			fail(w, r, 500, "INTERNAL_ERROR")
+			return
+		}
+		items = append(items, x)
+	}
+	if rows.Err() != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	JSON(w, 200, map[string]any{"items": items, "page": page, "page_size": limit})
+}
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	switch r.URL.Query().Get("period") {
+	case "7":
+		days = 7
+	case "90":
+		days = 90
+	case "all":
+		days = 36500
+	case "", "30":
+	default:
+		fail(w, r, 400, "INVALID_PERIOD")
+		return
+	}
+	mode := r.URL.Query().Get("mode")
+	if mode == "" {
+		mode = "live"
+	}
+	rows, e := s.Auth.DB.Query(r.Context(), `SELECT verdict,risk_level,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD'),count(*) FROM analyses WHERE user_id=$1 AND mode=$2 AND created_at>=$3 GROUP BY 1,2,3 ORDER BY 3`, owner(r), mode, time.Now().AddDate(0, 0, -days))
+	if e != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	defer rows.Close()
+	verdicts := map[string]int{"legitimate": 0, "suspicious": 0, "phishing": 0, "inconclusive": 0}
+	risks := map[string]int{"low": 0, "medium": 0, "high": 0, "critical": 0}
+	dates := map[string]int{}
+	total := 0
+	for rows.Next() {
+		var v, l, d string
+		var n int
+		if rows.Scan(&v, &l, &d, &n) != nil {
+			fail(w, r, 500, "INTERNAL_ERROR")
+			return
+		}
+		verdicts[v] += n
+		risks[l] += n
+		dates[d] += n
+		total += n
+	}
+	if rows.Err() != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	rows.Close()
+	result := map[string]any{"total_analyses": total, "verdict_distribution": verdicts, "risk_distribution": risks, "activity": dates, "mode": mode}
+	series := []map[string]any{}
+	keys := []string{}
+	for d := range dates {
+		keys = append(keys, d)
+	}
+	sort.Strings(keys)
+	for _, d := range keys {
+		series = append(series, map[string]any{"date": d, "count": dates[d]})
+	}
+	result["activity_series"] = series
+	for _, group := range []struct{ name, path, field string }{{"common_indicators", "indicators", "rule_id"}, {"common_attack_types", "attack_types", ""}, {"mitre_frequency", "mitre_mappings", "technique_id"}} {
+		expr := "item #>> '{}'"
+		if group.field != "" {
+			expr = "item ->> '" + group.field + "'"
+		}
+		query := `SELECT ` + expr + `,count(*) FROM analyses a CROSS JOIN LATERAL jsonb_array_elements(a.report->'report'->'` + group.path + `') item WHERE user_id=$1 AND mode=$2 AND created_at>=$3 GROUP BY 1 ORDER BY 2 DESC,1 LIMIT 10`
+		rs, x := s.Auth.DB.Query(r.Context(), query, owner(r), mode, time.Now().AddDate(0, 0, -days))
+		if x != nil {
+			fail(w, r, 500, "INTERNAL_ERROR")
+			return
+		}
+		values := []map[string]any{}
+		for rs.Next() {
+			var name string
+			var count int
+			if rs.Scan(&name, &count) != nil {
+				rs.Close()
+				fail(w, r, 500, "INTERNAL_ERROR")
+				return
+			}
+			values = append(values, map[string]any{"name": name, "count": count})
+		}
+		x = rs.Err()
+		rs.Close()
+		if x != nil {
+			fail(w, r, 500, "INTERNAL_ERROR")
+			return
+		}
+		result[group.name] = values
+	}
+	JSON(w, 200, result)
+}
+func pdfReport(row stored, lang string) ([]byte, error) {
+	p := fpdf.New("P", "mm", "A4", "")
+	p.AddUTF8FontFromBytes("Go", "", reports.Font)
+	p.SetFont("Go", "", 11)
+	p.SetAutoPageBreak(true, 15)
+	p.AddPage()
+	title := map[string]string{"en": "Security report", "ru": "Отчёт безопасности", "kk": "Қауіпсіздік есебі"}[lang]
+	line := func(s string) { p.MultiCell(180, 6, s, "", "", false) }
+	line("CyberGuard AI — Security, made clear.")
+	line(title)
+	line(row.ID)
+	line(row.Created.Format(time.RFC3339))
+	line(row.Report.Email.Subject)
+	line(row.Report.Email.Sender)
+	line(fmt.Sprintf("%s / %s / %d", row.Report.Verdict, row.Report.Level, row.Report.Score))
+	explanation, recommendation := detection.Narrative(lang)
+	if row.AI != nil {
+		explanation = row.AI.Explanations[lang]
+		recommendation = row.AI.Recommendations[lang]
+	}
+	line(explanation)
+	line(recommendation)
+	for _, f := range row.Report.Indicators {
+		line(f.Code + ": " + f.Evidence)
+	}
+	for _, x := range row.Report.IOCs {
+		line(x.Type + ": " + x.Defanged)
+	}
+	for _, a := range row.Report.Email.Attachments {
+		line(a.Filename + " " + a.SHA256)
+	}
+	for _, m := range row.Report.MITRE {
+		line(m.ID + " " + m.Name + " (" + m.Status + ")")
+	}
+	for _, l := range row.Report.Limitations {
+		line(l)
+	}
+	var b bytes.Buffer
+	e := p.Output(&b)
+	return b.Bytes(), e
+}

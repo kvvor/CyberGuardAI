@@ -1,0 +1,327 @@
+openapi: 3.0.3
+info:
+  title: CyberGuard AI backend API
+  version: 0.1.0
+  description: Local development backend. PostgreSQL integration validation is pending.
+servers:
+  - url: /api/v1
+security:
+  - session: []
+paths:
+  /health:
+    get:
+      security: []
+      responses:
+        '200': {description: PostgreSQL reachable}
+        '503': {$ref: '#/components/responses/Error'}
+  /config/public:
+    get:
+      security: []
+      responses:
+        '200':
+          description: Public capabilities, no secrets
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  languages: {type: array, items: {type: string}}
+                  max_email_size: {type: integer}
+                  public_signup: {type: boolean, enum: [false]}
+  /analyses:
+    post:
+      operationId: createAnalysis
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source_type]
+              properties:
+                source_type: {type: string, enum: [paste, demo]}
+                text: {type: string}
+                sender: {type: string}
+                subject: {type: string}
+                demo_sample_id: {type: string}
+                external_processing_consent: {type: boolean, default: false}
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary, description: EML or MSG up to 10 MiB}
+                external_processing_consent: {type: boolean, default: false}
+      responses:
+        '201': {$ref: '#/components/responses/Analysis'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+    get:
+      operationId: listAnalyses
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, maximum: 100000, default: 1}}
+        - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {name: search, in: query, schema: {type: string}}
+        - {name: verdict, in: query, schema: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}}
+        - {name: mode, in: query, schema: {type: string, enum: [live, demo], default: live}}
+      responses:
+        '200':
+          description: Owner-scoped history, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: {type: integer}
+                  page_size: {type: integer}
+                  items: {type: array, items: {$ref: '#/components/schemas/Analysis'}}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '500': {$ref: '#/components/responses/Error'}
+  /analyses/{id}:
+    parameters:
+      - {$ref: '#/components/parameters/AnalysisID'}
+    get:
+      responses:
+        '200': {$ref: '#/components/responses/Analysis'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+    delete:
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '204': {description: Owner-scoped report deleted}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /analyses/{id}/export:
+    get:
+      parameters:
+        - {$ref: '#/components/parameters/AnalysisID'}
+        - {name: format, in: query, required: true, schema: {type: string, enum: [pdf, json]}}
+        - {name: lang, in: query, schema: {type: string, enum: [en, ru, kk], default: en}}
+      responses:
+        '200':
+          description: Owner-scoped downloadable report
+          content:
+            application/pdf:
+              schema: {type: string, format: binary}
+            application/json:
+              schema: {$ref: '#/components/schemas/Analysis'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+  /dashboard/stats:
+    get:
+      parameters:
+        - {name: period, in: query, schema: {type: string, enum: ['7', '30', '90', all], default: '30'}}
+        - {name: mode, in: query, schema: {type: string, enum: [live, demo], default: live}}
+      responses:
+        '200':
+          description: Owner-scoped PostgreSQL aggregates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_analyses: {type: integer}
+                  mode: {type: string}
+                  verdict_distribution: {type: object, additionalProperties: {type: integer}}
+                  risk_distribution: {type: object, additionalProperties: {type: integer}}
+                  activity: {type: object, additionalProperties: {type: integer}, description: UTC date to count mapping}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /demo/samples:
+    get:
+      responses:
+        '200':
+          description: Synthetic demonstration metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+                    name: {type: string}
+                    synthetic: {type: boolean, enum: [true]}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /auth/login:
+    post:
+      operationId: login
+      security: []
+      description: Consumes temporary credentials atomically or authenticates a permanent password. Requires an allowed Origin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email, password]
+              properties:
+                email: {type: string, format: email}
+                password: {type: string, format: password, maxLength: 1024}
+      responses:
+        '200': {$ref: '#/components/responses/Auth'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /auth/activate-account:
+    post:
+      operationId: activateAccount
+      description: Requires an unexpired setup session. Consumes it and issues a fresh regular session.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NewPassword'}
+      responses:
+        '200': {$ref: '#/components/responses/Auth'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /auth/logout:
+    post:
+      operationId: logout
+      description: Revokes either a setup or regular session and expires the cookie.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '204': {description: Session revoked}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /auth/change-password:
+    post:
+      operationId: changePassword
+      description: Requires a regular session; revokes all sessions on success. Log in again.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: '#/components/schemas/NewPassword'}
+                - type: object
+                  required: [current_password]
+                  properties:
+                    current_password: {type: string, format: password, maxLength: 1024}
+      responses:
+        '204': {description: Password changed; login required}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /auth/me:
+    get:
+      operationId: currentUser
+      description: Requires a regular session. Setup sessions receive PASSWORD_CHANGE_REQUIRED.
+      responses:
+        '200': {$ref: '#/components/responses/Auth'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: cyberguard_session
+  parameters:
+    AnalysisID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    CSRF:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      schema: {type: string}
+  schemas:
+    Analysis:
+      type: object
+      required: [id, mode, created_at, report, status, explanations, recommendations]
+      properties:
+        id: {type: string, format: uuid}
+        mode: {type: string, enum: [live, demo]}
+        created_at: {type: string, format: date-time}
+        status: {type: string, enum: [complete, partial]}
+        explanations: {type: object, additionalProperties: {type: string}}
+        recommendations: {type: object, additionalProperties: {type: string}}
+        ai_assessment: {type: object, description: Validated Responses assessment; absent when no successful model call occurred}
+        report:
+          type: object
+          properties:
+            verdict: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}
+            risk_score: {type: integer, minimum: 0, maximum: 100}
+            risk_level: {type: string, enum: [low, medium, high, critical]}
+            scoring_version: {type: string}
+            attack_types: {type: array, items: {type: string}}
+            indicators: {type: array, items: {type: object}}
+            iocs: {type: array, items: {type: object}}
+            mitre_mappings: {type: array, items: {type: object}}
+            limitations: {type: array, items: {type: string}}
+            manual_review_required: {type: boolean}
+            email: {type: object, description: Metadata and attachment metadata; raw bodies and headers are removed before persistence}
+            ai_status: {type: string, enum: [not_requested, completed, unavailable, predefined_demo]}
+    NewPassword:
+      type: object
+      required: [new_password, confirm_password]
+      properties:
+        new_password: {type: string, format: password, minLength: 12, maxLength: 1024}
+        confirm_password: {type: string, format: password, minLength: 12, maxLength: 1024}
+    Auth:
+      type: object
+      required: [user, password_change_required, csrf_token]
+      properties:
+        password_change_required: {type: boolean}
+        csrf_token: {type: string}
+        user:
+          type: object
+          required: [id, email, display_name]
+          properties:
+            id: {type: string, format: uuid}
+            email: {type: string, format: email}
+            display_name: {type: string}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable code. Includes INVALID_CREDENTIALS, UNAUTHENTICATED, PASSWORD_CHANGE_REQUIRED, CSRF_INVALID, ORIGIN_INVALID, PASSWORD_CHANGE_FAILED, PASSWORD_MISMATCH, RATE_LIMITED, NOT_FOUND, INVALID_UPLOAD, INVALID_REQUEST, INTERNAL_ERROR and parser limit codes.
+            message: {type: string}
+            request_id: {type: string}
+  responses:
+    Auth:
+      description: Authentication state; cookie is HttpOnly, SameSite=Strict, Path=/, and Secure under HTTPS.
+      headers:
+        Set-Cookie:
+          schema: {type: string}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Auth'}
+    Error:
+      description: Stable machine-readable error; credential failures do not disclose account existence or status.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
