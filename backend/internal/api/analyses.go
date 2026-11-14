@@ -8,16 +8,18 @@ import (
 	"cyberguard.local/backend/internal/emailparser"
 	ai "cyberguard.local/backend/internal/openai"
 	"cyberguard.local/backend/internal/reports"
+	"cyberguard.local/backend/internal/repository"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/go-pdf/fpdf"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/jackc/pgx/v5"
 	"io"
 	"net/http"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -72,6 +74,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			e, err = emailparser.Parse(b, h.Filename, "eml", "", "")
 		}
 	} else {
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			fail(w, r, 415, "UNSUPPORTED_MEDIA_TYPE")
+			return
+		}
 		var in struct {
 			Source  string `json:"source_type"`
 			Text    string `json:"text"`
@@ -83,6 +89,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		d := json.NewDecoder(r.Body)
 		d.DisallowUnknownFields()
 		if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF || (in.Source != "paste" && in.Source != "demo") {
+			fail(w, r, 400, "INVALID_REQUEST")
+			return
+		}
+		if len(in.Sender) > 1024 || len(in.Subject) > 4096 || (in.Source == "paste" && strings.TrimSpace(in.Text) == "") {
 			fail(w, r, 400, "INVALID_REQUEST")
 			return
 		}
@@ -175,7 +185,11 @@ func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
 	var b []byte
 	err := s.Auth.DB.QueryRow(r.Context(), `SELECT id,mode,created_at,report FROM analyses WHERE id=$1 AND user_id=$2`, id, owner(r)).Scan(&row.ID, &row.Mode, &row.Created, &b)
 	if err != nil {
-		fail(w, r, 404, "NOT_FOUND")
+		if errors.Is(err, pgx.ErrNoRows) {
+			fail(w, r, 404, "NOT_FOUND")
+		} else {
+			fail(w, r, 500, "INTERNAL_ERROR")
+		}
 		return
 	}
 	if json.Unmarshal(b, &row) != nil {
@@ -212,44 +226,17 @@ func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
 	JSON(w, 200, row)
 }
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	page, _ := strconv.Atoi(q.Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	limit, _ := strconv.Atoi(q.Get("page_size"))
-	if limit < 1 || limit > 100 {
-		limit = 20
-	}
-	if page > 100000 {
-		fail(w, r, 400, "INVALID_PAGE")
+	f, e := repository.ParseHistory(r.URL.Query())
+	if e != nil {
+		fail(w, r, 400, "INVALID_FILTER")
 		return
 	}
-	mode := q.Get("mode")
-	if mode == "" {
-		mode = "live"
-	}
-	rows, e := s.Auth.DB.Query(r.Context(), `SELECT id,mode,created_at,report FROM analyses WHERE user_id=$1 AND mode=$2 AND ($3='' OR verdict=$3) AND (subject ILIKE $4 OR sender ILIKE $4) ORDER BY created_at DESC,id LIMIT $5 OFFSET $6`, owner(r), mode, q.Get("verdict"), "%"+q.Get("search")+"%", limit, (page-1)*limit)
+	items, total, e := repository.History(r.Context(), s.Auth.DB, owner(r), f)
 	if e != nil {
 		fail(w, r, 500, "INTERNAL_ERROR")
 		return
 	}
-	defer rows.Close()
-	items := []stored{}
-	for rows.Next() {
-		var x stored
-		var b []byte
-		if rows.Scan(&x.ID, &x.Mode, &x.Created, &b) != nil || json.Unmarshal(b, &x) != nil {
-			fail(w, r, 500, "INTERNAL_ERROR")
-			return
-		}
-		items = append(items, x)
-	}
-	if rows.Err() != nil {
-		fail(w, r, 500, "INTERNAL_ERROR")
-		return
-	}
-	JSON(w, 200, map[string]any{"items": items, "page": page, "page_size": limit})
+	JSON(w, 200, map[string]any{"items": items, "total": total, "page": f.Page, "page_size": f.Size})
 }
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	days := 30
@@ -268,6 +255,10 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	mode := r.URL.Query().Get("mode")
 	if mode == "" {
 		mode = "live"
+	}
+	if mode != "live" && mode != "demo" {
+		fail(w, r, 400, "INVALID_FILTER")
+		return
 	}
 	rows, e := s.Auth.DB.Query(r.Context(), `SELECT verdict,risk_level,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD'),count(*) FROM analyses WHERE user_id=$1 AND mode=$2 AND created_at>=$3 GROUP BY 1,2,3 ORDER BY 3`, owner(r), mode, time.Now().AddDate(0, 0, -days))
 	if e != nil {
@@ -307,6 +298,15 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		series = append(series, map[string]any{"date": d, "count": dates[d]})
 	}
 	result["activity_series"] = series
+	recent, _, err := repository.History(r.Context(), s.Auth.DB, owner(r), repository.HistoryFilter{Page: 1, Size: 5, Mode: mode, Sort: "newest"})
+	if err != nil {
+		fail(w, r, 500, "INTERNAL_ERROR")
+		return
+	}
+	result["recent_analyses"] = recent
+	for verdict, count := range verdicts {
+		result[verdict+"_count"] = count
+	}
 	for _, group := range []struct{ name, path, field string }{{"common_indicators", "indicators", "rule_id"}, {"common_attack_types", "attack_types", ""}, {"mitre_frequency", "mitre_mappings", "technique_id"}} {
 		expr := "item #>> '{}'"
 		if group.field != "" {
@@ -349,30 +349,40 @@ func pdfReport(row stored, lang string) ([]byte, error) {
 	line := func(s string) { p.MultiCell(180, 6, s, "", "", false) }
 	line("CyberGuard AI — Security, made clear.")
 	line(title)
-	line(row.ID)
-	line(row.Created.Format(time.RFC3339))
-	line(row.Report.Email.Subject)
-	line(row.Report.Email.Sender)
-	line(fmt.Sprintf("%s / %s / %d", row.Report.Verdict, row.Report.Level, row.Report.Score))
+	label := func(key string) string { return reports.Label(lang, key) }
+	if row.Mode == "demo" {
+		line(label("synthetic"))
+	}
+	line(label("id") + ": " + row.ID)
+	line(label("date") + ": " + row.Created.Format(time.RFC3339))
+	line(label("subject") + ": " + row.Report.Email.Subject)
+	line(label("sender") + ": " + row.Report.Email.Sender)
+	line(label("verdict") + ": " + label(row.Report.Verdict))
+	line(label("risk") + ": " + fmt.Sprintf("%d / %s", row.Report.Score, label(row.Report.Level)))
 	explanation, recommendation := detection.Narrative(lang)
 	if row.AI != nil {
 		explanation = row.AI.Explanations[lang]
 		recommendation = row.AI.Recommendations[lang]
 	}
-	line(explanation)
-	line(recommendation)
+	line(label("explanation") + ": " + explanation)
+	line(label("recommendations") + ": " + recommendation)
+	line(label("indicators"))
 	for _, f := range row.Report.Indicators {
 		line(f.Code + ": " + f.Evidence)
 	}
+	line(label("iocs"))
 	for _, x := range row.Report.IOCs {
 		line(x.Type + ": " + x.Defanged)
 	}
+	line(label("attachments"))
 	for _, a := range row.Report.Email.Attachments {
-		line(a.Filename + " " + a.SHA256)
+		line(fmt.Sprintf("%s (%d bytes) %s / %s SHA-256: %s", a.Filename, a.Size, a.Declared, a.Detected, a.SHA256))
 	}
+	line(label("mitre"))
 	for _, m := range row.Report.MITRE {
 		line(m.ID + " " + m.Name + " (" + m.Status + ")")
 	}
+	line(label("limitations"))
 	for _, l := range row.Report.Limitations {
 		line(l)
 	}

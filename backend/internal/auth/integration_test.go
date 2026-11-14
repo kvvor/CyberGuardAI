@@ -17,6 +17,10 @@ func TestActivationLifecyclePostgres(t *testing.T) {
 		t.Skip("TEST_DATABASE_URL not set; PostgreSQL integration deferred")
 	}
 	ctx := context.Background()
+	cfg, parseErr := pgxpool.ParseConfig(dsn)
+	if parseErr != nil || cfg.ConnConfig.Database != "cyberguard_test" {
+		t.Fatal("integration tests require isolated cyberguard_test database")
+	}
 	db, e := pgxpool.New(ctx, dsn)
 	if e != nil {
 		t.Fatal(e)

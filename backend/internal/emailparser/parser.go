@@ -16,6 +16,7 @@ import (
 	"net/textproto"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type Attachment struct {
@@ -26,19 +27,22 @@ type Attachment struct {
 	SHA256   string `json:"sha256"`
 }
 type Email struct {
-	Source      string              `json:"source_type"`
-	Filename    string              `json:"filename"`
-	SHA256      string              `json:"file_sha256"`
-	MessageID   string              `json:"message_id"`
-	Subject     string              `json:"subject"`
-	Sender      string              `json:"sender"`
-	ReplyTo     string              `json:"reply_to"`
-	Recipients  []string            `json:"recipients"`
-	Headers     map[string][]string `json:"headers"`
-	Text        string              `json:"text_body"`
-	HTML        string              `json:"html_body"`
-	Attachments []Attachment        `json:"attachments"`
-	Warnings    []string            `json:"parser_warnings"`
+	Source                string              `json:"source_type"`
+	Filename              string              `json:"filename"`
+	SHA256                string              `json:"file_sha256"`
+	MessageID             string              `json:"message_id"`
+	Subject               string              `json:"subject"`
+	Sender                string              `json:"sender"`
+	ReplyTo               string              `json:"reply_to"`
+	Recipients            []string            `json:"recipients"`
+	Headers               map[string][]string `json:"headers"`
+	Text                  string              `json:"text_body"`
+	HTML                  string              `json:"html_body"`
+	Attachments           []Attachment        `json:"attachments"`
+	Warnings              []string            `json:"parser_warnings"`
+	Timestamp             *time.Time          `json:"timestamp,omitempty"`
+	AuthenticationResults []string            `json:"authentication_results"`
+	AvailableEvidence     []string            `json:"available_evidence"`
 }
 
 func hash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -47,7 +51,7 @@ func Parse(data []byte, filename, source, sender, subject string) (Email, error)
 	if len(data) > 10<<20 {
 		return v, fmt.Errorf("EMAIL_TOO_LARGE")
 	}
-	if source == "paste" && !bytes.HasPrefix(data, []byte("From:")) && !bytes.HasPrefix(data, []byte("Received:")) {
+	if source == "paste" && !looksLikeSource(data) {
 		v.Text = string(data)
 		v.Warnings = append(v.Warnings, "MISSING_EMAIL_HEADERS")
 		return v, nil
@@ -76,9 +80,35 @@ func Parse(data []byte, filename, source, sender, subject string) (Email, error)
 	v.MessageID = m.Header.Get("Message-ID")
 	v.Recipients = append(m.Header["To"], m.Header["Cc"]...)
 	v.Headers = map[string][]string(m.Header)
+	v.AuthenticationResults = m.Header["Authentication-Results"]
+	v.AvailableEvidence = []string{"headers", "body"}
+	if date, e := mail.ParseDate(m.Header.Get("Date")); e == nil {
+		date = date.UTC()
+		v.Timestamp = &date
+	}
+	if v.Sender == "" {
+		v.Warnings = append(v.Warnings, "MISSING_SENDER")
+	}
 	budget := 20 << 20
 	e = part(&v, textproto.MIMEHeader(m.Header), m.Body, 0, &budget)
 	return v, e
+}
+func looksLikeSource(b []byte) bool {
+	s := string(b)
+	end := strings.Index(s, "\n\n")
+	if n := strings.Index(s, "\r\n\r\n"); n >= 0 && (end < 0 || n < end) {
+		end = n
+	}
+	if end < 0 {
+		return false
+	}
+	h := strings.ToLower(s[:end])
+	for _, prefix := range []string{"from:", "subject:", "received:", "mime-version:", "content-type:", "date:"} {
+		if strings.HasPrefix(h, prefix) || strings.Contains(h, "\n"+prefix) {
+			return true
+		}
+	}
+	return false
 }
 func part(v *Email, h textproto.MIMEHeader, r io.Reader, depth int, budget *int) error {
 	if depth > 12 {

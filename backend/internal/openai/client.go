@@ -9,10 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
 type Assessment struct {
+	Usage           *Usage            `json:"usage,omitempty"`
 	Verdict         string            `json:"proposed_verdict"`
 	AttackTypes     []string          `json:"suspected_attack_types"`
 	Patterns        []string          `json:"social_engineering_patterns"`
@@ -21,6 +24,11 @@ type Assessment struct {
 	Uncertainty     []string          `json:"uncertainty_notes"`
 	Explanations    map[string]string `json:"explanations"`
 	Recommendations map[string]string `json:"recommendations"`
+}
+type Usage struct {
+	Input  int `json:"input_tokens"`
+	Output int `json:"output_tokens"`
+	Total  int `json:"total_tokens"`
 }
 type Client struct {
 	Key, Model, Endpoint string
@@ -70,16 +78,30 @@ func (c *Client) Assess(ctx context.Context, r detection.Report) (Assessment, er
 		if e != nil {
 			return result, errors.New("OPENAI_UNAVAILABLE")
 		}
-		raw, e := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		raw, e := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 		resp.Body.Close()
-		if e != nil {
+		if e != nil || len(raw) > 1<<20 {
 			return result, errors.New("OPENAI_UNAVAILABLE")
 		}
-		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+		if resp.StatusCode == 429 || resp.StatusCode == 408 || resp.StatusCode >= 500 {
+			if attempt == 2 {
+				return result, errors.New("OPENAI_UNAVAILABLE")
+			}
+			delay := time.Duration(1<<attempt) * 200 * time.Millisecond
+			if retry := resp.Header.Get("Retry-After"); retry != "" {
+				if seconds, err := strconv.Atoi(retry); err == nil && seconds > 0 {
+					if seconds > 45 {
+						return result, errors.New("OPENAI_RATE_LIMITED")
+					}
+					delay = time.Duration(seconds) * time.Second
+				} else if date, err := http.ParseTime(retry); err == nil && time.Until(date) > delay {
+					delay = time.Until(date)
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return result, ctx.Err()
-			case <-time.After(time.Duration(1<<attempt) * 200 * time.Millisecond):
+			case <-time.After(delay):
 				continue
 			}
 		}
@@ -87,6 +109,7 @@ func (c *Client) Assess(ctx context.Context, r detection.Report) (Assessment, er
 			return result, fmt.Errorf("OPENAI_HTTP_%d", resp.StatusCode)
 		}
 		var envelope struct {
+			Usage  *Usage `json:"usage"`
 			Status string `json:"status"`
 			Output []struct {
 				Content []struct{ Type, Text, Refusal string } `json:"content"`
@@ -120,7 +143,11 @@ func (c *Client) Assess(ctx context.Context, r detection.Report) (Assessment, er
 		if d.Decode(&result) != nil || d.Decode(new(any)) != io.EOF {
 			return result, errors.New("OPENAI_INVALID_OUTPUT")
 		}
-		return result, validate(result, r)
+		if err := validate(result, r); err != nil {
+			return Assessment{}, err
+		}
+		result.Usage = envelope.Usage
+		return result, nil
 	}
 	return result, errors.New("OPENAI_UNAVAILABLE")
 }
@@ -136,7 +163,7 @@ func validate(a Assessment, r detection.Report) error {
 			return bad
 		}
 		for _, l := range []string{"en", "ru", "kk"} {
-			if len(m[l]) == 0 || len(m[l]) > 16000 {
+			if len(strings.TrimSpace(m[l])) == 0 || len(m[l]) > 16000 {
 				return bad
 			}
 		}
@@ -146,8 +173,28 @@ func validate(a Assessment, r detection.Report) error {
 		allowed[f.ID] = true
 	}
 	for _, ids := range [][]string{a.Supporting, a.Contradictory} {
+		if len(ids) > 128 {
+			return bad
+		}
 		for _, id := range ids {
 			if !allowed[id] {
+				return bad
+			}
+		}
+	}
+	for _, support := range a.Supporting {
+		for _, contra := range a.Contradictory {
+			if support == contra {
+				return bad
+			}
+		}
+	}
+	for _, list := range [][]string{a.Patterns, a.Uncertainty, a.AttackTypes} {
+		if len(list) > 64 {
+			return bad
+		}
+		for _, s := range list {
+			if len(s) > 4096 {
 				return bad
 			}
 		}

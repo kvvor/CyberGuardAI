@@ -67,6 +67,12 @@ func Analyze(e emailparser.Email) Report {
 	r := Report{Email: e, Verdict: "inconclusive", Level: "low", Version: "1.0.0", AttackTypes: []string{}, Indicators: []Finding{}, IOCs: []IOC{}, MITRE: []Mapping{}, Limitations: []string{"HEURISTIC_NOT_PROBABILITY", "AUTHENTICATION_HEADERS_UNVERIFIED", "NO_REPUTATION_LOOKUP"}, Manual: true, AIStatus: "not_requested"}
 	r.Limitations = append(r.Limitations, e.Warnings...)
 	add := func(rule, ev, source string, weight int) {
+		if len(r.Indicators) >= 128 {
+			return
+		}
+		if len(ev) > 2048 {
+			ev = ev[:2048]
+		}
 		severity := "medium"
 		if weight >= 25 {
 			severity = "high"
@@ -97,6 +103,30 @@ func Analyze(e emailparser.Email) Report {
 	if strings.Contains(strings.ToLower(e.Sender), "xn--") {
 		add("PUNYCODE_SENDER", e.Sender, "headers", 10)
 	}
+	if a, err := mail.ParseAddress(e.Sender); err == nil {
+		if displayed, err := mail.ParseAddress(a.Name); err == nil && !strings.EqualFold(displayed.Address, a.Address) {
+			add("DISPLAY_NAME_SPOOFING", e.Sender, "headers", 25)
+			attack("impersonation")
+		}
+		for _, brand := range []string{"microsoft", "paypal", "google", "apple", "amazon"} {
+			host := domain(e.Sender)
+			label := strings.Split(host, ".")[0]
+			if strings.Contains(strings.ToLower(a.Name), brand) && host != brand+".com" && !strings.HasSuffix(host, "."+brand+".com") {
+				add("BRAND_DOMAIN_MISMATCH", e.Sender, "headers", 15)
+				attack("impersonation")
+			}
+			if label != brand && lookalike(label, brand) {
+				add("LOOKALIKE_DOMAIN", host+" resembles "+brand, "headers", 20)
+				attack("impersonation")
+			}
+		}
+	}
+	for _, value := range e.AuthenticationResults {
+		lower := strings.ToLower(value)
+		if strings.Contains(lower, "spf=fail") || strings.Contains(lower, "dkim=fail") || strings.Contains(lower, "dmarc=fail") {
+			add("REPORTED_AUTHENTICATION_FAILURE", value, "untrusted_header", 5)
+		}
+	}
 	body := strings.ToLower(e.Text + " " + e.Subject + " " + e.HTML)
 	for _, rule := range []struct {
 		code   string
@@ -114,6 +144,9 @@ func Analyze(e emailparser.Email) Report {
 	}
 	seen := map[string]bool{}
 	ioc := func(typ, value, source string) {
+		if len(r.IOCs) >= 512 || len(value) > 2048 {
+			return
+		}
 		norm := value
 		if typ != "url" {
 			norm = strings.ToLower(value)
@@ -125,10 +158,15 @@ func Analyze(e emailparser.Email) Report {
 		seen[k] = true
 		r.IOCs = append(r.IOCs, IOC{typ, value, norm, Defang(norm), source})
 	}
-	links := urls.FindAllString(e.Text+" "+e.HTML, -1)
+	links := urls.FindAllString(e.Text+" "+e.HTML, 512)
 	doc, _ := html.Parse(strings.NewReader(e.HTML))
 	var walk func(*html.Node)
+	visited := 0
 	walk = func(n *html.Node) {
+		visited++
+		if visited > 10000 {
+			return
+		}
 		if n.Type == html.ElementNode && n.Data == "a" {
 			href := ""
 			for _, a := range n.Attr {
@@ -136,7 +174,7 @@ func Analyze(e emailparser.Email) Report {
 					href = a.Val
 				}
 			}
-			if href != "" {
+			if href != "" && len(links) < 512 {
 				links = append(links, href)
 				if n.FirstChild != nil && n.FirstChild.Type == html.TextNode {
 					shown, _ := url.Parse(strings.TrimSpace(n.FirstChild.Data))
@@ -164,7 +202,9 @@ func Analyze(e emailparser.Email) Report {
 			continue
 		}
 		ioc("url", u.String(), "body")
-		ioc("domain", u.Hostname(), "url")
+		if net.ParseIP(u.Hostname()) == nil {
+			ioc("domain", u.Hostname(), "url")
+		}
 		if net.ParseIP(u.Hostname()) != nil {
 			ioc("ip", u.Hostname(), "url")
 			add("IP_LINK", raw, "url", 20)
@@ -175,6 +215,15 @@ func Analyze(e emailparser.Email) Report {
 	}
 	for _, x := range emails.FindAllString(e.Text+" "+e.Sender+" "+e.ReplyTo, -1) {
 		ioc("email", x, "email")
+		parts := strings.Split(x, "@")
+		ioc("domain", parts[len(parts)-1], "email")
+	}
+	for _, candidate := range strings.FieldsFunc(e.Text, func(c rune) bool {
+		return !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == '.' || c == ':')
+	}) {
+		if ip := net.ParseIP(strings.Trim(candidate, ".")); ip != nil {
+			ioc("ip", ip.String(), "body")
+		}
 	}
 	for _, x := range hashes.FindAllString(e.Text, -1) {
 		ioc("hash", x, "body")
@@ -238,4 +287,23 @@ func Analyze(e emailparser.Email) Report {
 		}
 	}
 	return r
+}
+func lookalike(a, b string) bool {
+	if a == b || len(a) < 3 {
+		return false
+	}
+	normalized := strings.NewReplacer("0", "o", "1", "l", "rn", "m").Replace(a)
+	if normalized == b {
+		return true
+	}
+	if len(a) != len(b) {
+		return false
+	}
+	changes := 0
+	for i := range a {
+		if a[i] != b[i] {
+			changes++
+		}
+	}
+	return changes == 1
 }

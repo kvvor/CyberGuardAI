@@ -15,7 +15,7 @@ variables; .env is not automatically loaded. From backend/:
 Temporary credentials print only in an interactive terminal. CLI operations
 users reset-password and users disable take --email and revoke existing sessions.
 Default listener: 127.0.0.1:8080. Default Origin: http://localhost:3000.
-Proxy /api from Vite, preserving Origin. No cross-origin credential sharing.
+Proxy /api from Vite, preserving Origin. Exact-origin credentialed CORS is supported; the same-origin frontend proxy is recommended.
 
 ## Authentication
 
@@ -65,7 +65,7 @@ Evidence snippets and metadata can still contain private data.
 ## History, statistics and export
 
 GET /analyses?page=1&page_size=20&search=...&verdict=phishing&mode=live returns
-{items,page,page_size}, newest first. Page sizes are bounded to 100.
+{items,total,page,page_size}. sort accepts newest, oldest, risk_desc, risk_asc; date_from/date_to accept UTC dates or RFC3339 timestamps. Page sizes are bounded to 100.
 GET /analyses/{id} reads; DELETE /analyses/{id} deletes with 204.
 GET /analyses/{id}/export?format=pdf|json&lang=en|ru|kk downloads reports.
 GET /dashboard/stats?period=7|30|90|all&mode=live|demo returns total_analyses,
@@ -76,8 +76,7 @@ mitre_frequency ({name,count} arrays).
 Every query uses the session owner ID. Foreign IDs yield the same 404 as missing
 IDs. Live is the default mode. Exports use cookies, never URL tokens. PDF embeds
 Noto Sans under SIL OFL (license bundled in backend/internal/reports/assets).
-All Kazakh-specific characters have glyph-coverage tests. Technical evidence
-and codes remain verbatim; full localized section labels are pending.
+All Kazakh-specific characters have glyph-coverage tests. Section labels and verdicts are localized; forensic evidence and technical codes remain verbatim.
 
 ## Validation and remaining work
 
@@ -92,12 +91,18 @@ No paid OpenAI test ran.
 
 The original complete MVP is not yet finished. Outstanding: database integration
 and broader security tests; repository/service extraction from analysis handlers;
-date filters/sorting; configurable processing limits;
-comprehensive spoofing/lookalike/authentication rules; broader IOC extraction;
-richer localized report labels; OpenAI usage and Retry-After support; fully typed
-nested OpenAPI schemas; frontend end-to-end verification. Docker stays deferred.
+configurable processing limits;
+broader labeled-corpus evaluation;
+broader hostile-parser testing; frontend end-to-end verification. Docker stays deferred.
 
 
 Retention: RETENTION_DAYS=0 disables automatic deletion; positive values enable
 hourly cleanup of older reports. SESSION_IDLE_TIMEOUT and SESSION_ABSOLUTE_TIMEOUT
 configure session expiry. PostgreSQL cleanup execution remains unverified.
+
+Current validation: PostgreSQL service is running and pg_isready succeeds. Administrator
+authentication is pending local secure entry. See local-windows.md for exact setup
+and startup commands. The HTTP integration suite covers two-user isolation, uploads,
+activation, history, statistics, exports and password changes, but is not yet executed
+against PostgreSQL. Race tests require a missing GCC toolchain. OpenAPI validation
+is automated and passing. No paid OpenAI call or Docker operation was performed.

@@ -2,6 +2,7 @@ package emailparser
 
 import (
 	"encoding/binary"
+	"strings"
 	"testing"
 	"unicode/utf16"
 )
@@ -68,7 +69,7 @@ func TestSyntheticMSG(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.Source != "msg" || e.SHA256 == "" {
+	if e.Source != "msg" || e.SHA256 == "" || !strings.HasPrefix(e.Text, "Synthetic message body") {
 		t.Fatal("normalization")
 	}
 	if _, err = ParseMSG([]byte("corrupt"), "bad.msg"); err == nil {

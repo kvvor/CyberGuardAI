@@ -65,7 +65,6 @@ func (s *Server) cookie(w http.ResponseWriter, token string) {
 }
 func (s *Server) Router() http.Handler {
 	r := mux.NewRouter()
-	r.Use(s.security)
 	r.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
@@ -94,7 +93,22 @@ func (s *Server) Router() http.Handler {
 	p.HandleFunc("/auth/activate-account", s.password).Methods("POST")
 	p.HandleFunc("/auth/change-password", s.password).Methods("POST")
 	p.HandleFunc("/auth/me", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, r.Context().Value(key(0))) }).Methods("GET")
-	return r
+	slots := make(chan struct{}, 8)
+	bounded := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		select {
+		case slots <- struct{}{}:
+			defer func() { <-slots }()
+		case <-req.Context().Done():
+			return
+		default:
+			fail(w, req, 503, "SERVER_BUSY")
+			return
+		}
+		ctx, cancel := context.WithTimeout(req.Context(), 65*time.Second)
+		defer cancel()
+		r.ServeHTTP(w, req.WithContext(ctx))
+	})
+	return s.security(bounded)
 }
 func (s *Server) security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -103,6 +117,27 @@ func (s *Server) security(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		if r.Header.Get("Origin") == s.Origin && s.Origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", s.Origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Add("Vary", "Origin")
+		}
+		if r.Method == "OPTIONS" {
+			if r.Header.Get("Origin") != s.Origin {
+				fail(w, r, 403, "ORIGIN_INVALID")
+				return
+			}
+			switch r.Header.Get("Access-Control-Request-Method") {
+			case "GET", "POST", "DELETE":
+			default:
+				fail(w, r, 403, "METHOD_NOT_ALLOWED")
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token")
+			w.WriteHeader(204)
+			return
+		}
 		if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != s.Origin {
 			fail(w, r, 403, "ORIGIN_INVALID")
 			return
