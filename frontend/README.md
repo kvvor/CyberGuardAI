@@ -76,3 +76,17 @@ No browser automation tool was available in this session. Use a CLI-provisioned 
 Authenticated live browser integration, visual/accessibility review, and complete native-language review remain unverified. Backend technical finding codes and free-text parser/AI evidence are shown verbatim; human-friendly localization of the entire backend finding vocabulary is not yet implemented. The top bar has preferences; account information/logout live in the sidebar rather than a separate account-menu popover. Notifications use inline accessible status/error feedback rather than a toast system. Sidebar animation is CSS-based. These gaps mean the full requested definition of done has not yet been verified.
 
 The backend schema does not provide a dedicated CC field, per-attachment warnings field, or profile-edit endpoint. The frontend does not invent these fields or endpoints. Attachment warnings are available only through overall findings/parser warnings. No backend source was modified.
+
+## Website registration integration
+
+Implemented against the updated OpenAPI and handoff in backend commit `c1abb68`, read directly using `git show`. The docs/backend source in this frontend worktree remain at the earlier checkpoint; no backend files or branches were merged or modified.
+
+- `/register` submits only display_name, email, password and confirm_password to POST /api/v1/auth/register. Public registration requires Origin, not a session CSRF token.
+- Public config must return public_signup=true. Otherwise the login signup link is hidden and direct registration displays a disabled message. Config failures offer retry and never enable signup by default.
+- The backend returns identical REGISTRATION_ACCEPTED acknowledgments for new and duplicate accounts. The localized success notice accurately says the request was accepted and directs existing users to their existing password. Registration never establishes a session.
+- Passwords remain in form/request memory only. Redirect state contains only a boolean success flag. CLI activation remains unchanged.
+- EN/RU/KK includes validation and registration errors. Server-disabled registration, rate limits, invalid input and network failures are handled.
+
+Backend operator: launch the registration-capable backend with `$env:PUBLIC_REGISTRATION_ENABLED="true"` in its process environment. The flag defaults to false and requires a backend restart. Do not run the older backend sources in this frontend worktree expecting registration support.
+
+Validation: 36 automated tests pass, lint passes, build passes (existing bundle-size warning). The running backend public configuration still reports false, so live account creation/login was not attempted or claimed verified. No browser automation is available. For manual verification after enabling: open login, follow Create Account, register a fresh email, verify acknowledgment on login, sign in; repeat registration with that email and verify the same acknowledgment without changing its existing password. Verify CLI temporary-password login still requires activation, then check disabled registration and RU/KK rendering.

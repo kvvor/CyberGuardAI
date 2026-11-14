@@ -12,7 +12,7 @@ export async function api(path, { method = 'GET', body, signal, blob = false } =
   try {
     const headers = {};
     if (body && !(body instanceof FormData)) headers['Content-Type'] = 'application/json';
-    if (method !== 'GET' && path !== '/auth/login') {
+    if (method !== 'GET' && !["/auth/login", "/auth/register"].includes(path)) {
       headers['X-CSRF-Token'] = csrf || decodeURIComponent(document.cookie.split('; ').find(v => v.startsWith('cyberguard_csrf='))?.split('=')[1] || '');
     }
     const response = await fetch(`/api/v1${path}`, { method, credentials: 'include', headers, body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined, signal: controller.signal });
