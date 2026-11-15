@@ -1,111 +1,76 @@
-# Full rework checkpoint
+# Verification status and known limitations
 
-Branch: `feature/full-rework`. Initial tree clean at `7115869`; reviewed WIP
-`a5f0f69` and preserved its OpenAI/encryption/URL changes.
+Branch `feature/full-rework`. This file states what was actually verified, how,
+and what was not. "Mock" means the local stand-ins in
+`backend/internal/mockproviders`; no request was sent to the real OpenAI or
+VirusTotal services at any point.
 
-Implementation checklist (unchecked items are not complete):
+## The Settings defect
 
-- [x] Audit branch, history, parser/API/provider/frontend structure and migrations.
-- [ ] Complete shared per-user encrypted provider settings and test both providers.
-- [ ] VirusTotal hash-only client, independent consent, persistence and UI.
-- [ ] Structured authentication and deterministic evidence IDs.
-- [ ] Replace weighted final classification with validated OpenAI verdicts.
-- [x] Remove active demo and MITRE features, preserve historical readability.
-- [ ] Provider settings, analyzer, compact reports, dashboard and three languages.
-- [ ] Portable configuration and Windows startup/install scripts.
-- [ ] Full backend/frontend/PostgreSQL/end-to-end validation and documentation.
+"The server could not complete the request" when saving an API key was caused
+by the application database being at migration 000002 while the code required
+000003. Details and the fix are in
+[ai-providers.md](ai-providers.md#the-server-could-not-complete-the-request-defect).
+The situation is reproduced by `TestOutdatedSchemaIsReportedNotInternalError`.
+The application database on the development machine is now at version 4.
 
-Baseline: existing application still uses heuristic scores and hybrid adjustments;
-provider table supports only OpenAI; frontend settings has no provider controls.
-Existing parser already hashes attachments; existing OpenAI uses Responses with
-strict JSON schema and validates indicator IDs and exact contextual quotes.
-Existing migrations 000001 and 000002 must be preserved; extend additively.
+## Verified
 
-No live provider calls, pushes, database deletion or destructive Git operations
-are authorized by this implementation workflow.
+| Area | How |
+|---|---|
+| Go build, vet | `go build ./...`, `go vet ./...` |
+| Backend unit tests | `go test ./...` (12 packages) |
+| Backend with PostgreSQL | same with `TEST_DATABASE_URL` (isolated `cyberguard_test`, migrated to version 4) |
+| Provider settings: save, reload, model list, test, replace, disable, remove, isolation, encryption at rest, all negative cases | `TestProviderSettingsWorkflow`, `TestMissingMasterKeyIsReported` (HTTP + PostgreSQL + mock) |
+| Analysis pipeline: EML, MSG, paste, hashing, VirusTotal, evidence, OpenAI, validation, storage, reopen, history, dashboard, PDF, JSON | `TestAnalysisPipelineWithMockProviders` |
+| Provider failures never produce a verdict | `TestProviderFailuresNeverProduceAVerdict` |
+| VirusTotal duplicates, allowance, deferred re-check | `TestVirusTotalBatchesQuotaAndRecheck` |
+| Historical reports readable, no attack-framework data returned, not counted as verdicts | `TestLegacyReportsStayReadable` |
+| Sign-in, session persistence, password change, sign-out, registration switch | `TestAuthenticationFlow` |
+| Model output validation, prompt-injection boundary, request shape | `internal/openai` tests |
+| Evidence extraction and false-positive regressions | `internal/detection`, `internal/evaluation` tests |
+| Parser robustness (nested MIME, encodings, limits, malformed input, MSG) | `internal/emailparser` tests |
+| Frontend | 87 component tests, `eslint`, production build |
+| Browser, real UI, isolated instance (test database + mocks) | register, sign in, session after reload, OpenAI and VirusTotal save / model list / test / replace with failing keys, EML upload with both consents, report, PDF and JSON export, incomplete report after a quota failure, history filter, dashboard counts, Russian and Kazakh, backend stopped |
+| Windows scripts | syntax of all scripts; `backend.ps1 -Mode status`; `start-backend.ps1` (migrate, then serve); `setup.ps1` guard paths and `initialize-provider-key.ps1` from a folder with spaces; `psql.exe` discovery |
+| OpenAPI document | parsed and validated by `TestOpenAPIContract` |
 
-## Verified provider increment
+## Not verified
 
-- Shared provider service now scopes AES-GCM associated data and PostgreSQL rows
-  by provider and owner. Migration 000003 preserves OpenAI data and adds VT quotas.
-- VirusTotal hash-only client, explicit per-analysis consent, deduplication,
-  bounded requests, error states, JSON persistence and PDF reputation fields.
-- Functional OpenAI/VirusTotal Settings, analyzer configuration status, independent
-  consent and attachment reputation UI, translated into en/ru/kk.
-- `go build ./...`, `go vet ./...`, and `go test -count=1 ./...` passed, including
-  isolated PostgreSQL tests after migrating cyberguard_test. Test credentials
-  were loaded without printing from the existing sibling worktree configuration;
-  no production database was touched.
-- `npm.cmd ci`, `npm.cmd run test` (41 tests), `npm.cmd run lint`,
-  `npm.cmd run build` passed. Build emits a nonfatal chunk size warning.
-- Mocked VT tests cover HTTP status mapping, invalid/oversized data, redirects,
-  network failures, timeout, duplicate hashes and quota denial.
-- Initial OpenAPI validation failed on an unquoted comma; corrected and rerun.
-- No live provider or browser end-to-end test ran.
+- **Live OpenAI**: key acceptance, the model list, and above all whether a
+  given real model accepts the strict schema and how good its verdicts are.
+  The request format follows the Responses API documentation but has only met
+  the mock.
+- **Live VirusTotal**: key acceptance and real response bodies.
+- **Detection quality**: no precision/recall figures exist for any real model
+  ([evaluation.md](evaluation.md)).
+- **Fresh installation** from a ZIP on a separate clean Windows machine, and an
+  interactive run of `setup-postgres.ps1` (needs the PostgreSQL administrator
+  password). `setup.ps1` was not run to completion on the development machine
+  because `npm ci` would have replaced dependencies under a running dev server.
+- **Race detector** (`go test -race`): needs a C toolchain that is not
+  installed here.
+- **Manual accessibility and small-screen review**: layouts are responsive by
+  CSS and controls are labelled, but no screen-reader or device testing was done.
+- Real Outlook `.msg` files: tests use a synthetic container.
 
-Not a completed full rework: legacy classification, demo, MITRE, authentication
-evidence redesign, Windows scripts and large attachment batch scheduling remain.
-See virustotal.md for provider scope and licensing constraints.
+## Known limitations
 
-## Verified live verdict increment
+- SPF, DKIM and DMARC are reported from headers, not verified. DKIM
+  verification would need DNS lookups for attacker-chosen domains and was left
+  out deliberately.
+- Model prose is not fact-checked; only typed fields, references and quotes are.
+- Model explanations are produced in English, Russian and Kazakh by the model;
+  their translation quality depends on the model.
+- VirusTotal batches above the per-minute allowance need a manual re-check;
+  there is no background queue.
+- Analysis is one synchronous request (up to 170 seconds). Progress shows the
+  requested steps and elapsed time, not per-step completion.
+- Sorting history by legacy score was removed from the UI; the API still
+  accepts `risk_desc`/`risk_asc` for historical rows.
+- The production frontend bundle is large (charting library); no code
+  splitting beyond the dashboard.
+- Rate limiting is in-memory and per address. See [security.md](security.md)
+  before exposing the application beyond `localhost`.
 
-Live analysis now calls PrepareEvidence and uses validated OpenAI verdict directly;
-Hybrid is no longer authoritative. Model input excludes legacy scores and keyword
-judgments. Added explicit untrusted authentication evidence, stable evidence IDs,
-HTML text sanitization and bounded body truncation. Failed/missing AI produces no
-ai_assessment or final_verdict. Added qualitative severity/confidence and compact
-new report UI with IOC search/pagination. See evidence-pipeline.md for limitations.
-
-PostgreSQL/backend tests and all 44 frontend tests, lint and build pass. Updated an
-old integration assertion that expected phishing without any model execution.
-Semantic validation of arbitrary model prose, complete feature removal, queued VT
-batches, dashboard failure aggregation and Windows portability are still pending.
-
-## Feature removal increment
-
-Removed live demo route/submission/UI/translations and mapping generation, report
-sections, charts, schema and labels. Demo samples are test-only now. Historical
-JSON remains in the database; obsolete mapping fields are omitted from read APIs.
-Removed heuristic score accumulation, keyword judgments and Hybrid adjustment code.
-Backend/PostgreSQL tests and 44 frontend tests, lint/build passed. One old UI test
-asserting a removed badge was updated to require its absence and preserve reading.
-
-## Windows and integrated flow increment
-
-Implemented literal .env.local loading in server/CLI, environment precedence,
-startup encryption validation and database ping, portable setup/backend/frontend
-scripts and Russian fresh-install guide. No hardcoded developer path remains in
-runtime scripts. All PowerShell scripts passed syntax parsing. The key initialization
-script was executed from a temporary installation path with per-process Bypass;
-it generated one key and preserved it on a second run. Initial direct invocation
-was blocked by execution policy, then corrected; no global policy was changed.
-
-Started backend on port 18080 against cyberguard_test with a synthetic master key,
-and Vite on 13000. PostgreSQL health and frontend HTTP returned successfully; both
-temporary processes were stopped. This is HTTP smoke testing, not browser E2E.
-
-Added a mocked provider HTTP/PostgreSQL test: configure both providers, parse a
-multipart MIME email, hash attachment, look up VT, include reputation in model
-input, validate assessment, persist/reopen evidence, export PDF and clean up only
-its own records. Added MSG transport-header fixture proving Authentication-Results
-and routing survive parsing. Dashboard now separates completed/incomplete/legacy
-counts; incomplete results no longer count as model inconclusive verdicts.
-
-## Remaining release blockers (not completed)
-
-- Typed validation of every factual authentication/reputation claim in model prose;
-  current validation verifies schema, enums, references and exact quotes, not
-  arbitrary semantic truth. Model interpretations are not independent facts.
-- Durable queued/batched VT lookups; current conservative quota can leave excess
-  distinct hashes unqueried. Retry scheduling and per-license quotas are absent.
-- Independent DKIM verification, deeper SPF/DMARC alignment, robust multi-brand
-  impersonation comparison, broader URL-wrapper/IOC categorization coverage.
-- Full localization of forensic limitations and model contextual findings, which
-  can still include untranslated technical values or model text.
-- Complete labeled synthetic regression corpus and measured disagreements;
-  no real-world detection accuracy claim is supported.
-- Browser E2E, fresh-machine installation, accessibility/responsive manual review,
-  deployment hardening and race-detector validation. No live provider test ran.
-- Further API schema/implementation parity review and report semantics hardening.
-
-No push or merge to main has occurred. Local application data was not deleted.
+No push and no merge to `main` have been made. No application data was deleted.

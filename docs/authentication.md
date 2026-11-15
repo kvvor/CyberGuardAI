@@ -27,5 +27,5 @@ credential. Send its value as X-CSRF-Token on authenticated mutations. The serve
 checks both Origin and the stored CSRF hash. Cookies use SameSite=Strict and
 COOKIE_SECURE controls HTTPS-only delivery. All secrets remain out of logs.
 
-Database lifecycle/concurrency tests are implemented but require a migrated,
-isolated TEST_DATABASE_URL. They have not been run against a live server here.
+Database lifecycle tests require a migrated, isolated TEST_DATABASE_URL
+(`scripts\backend.ps1 -Mode test`); see rework-checkpoint.md for the last run.

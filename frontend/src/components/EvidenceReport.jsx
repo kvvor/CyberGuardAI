@@ -163,7 +163,7 @@ export default function EvidenceReport({ analysis, onExport, onDelete, onUpdated
       </div>
       <ErrorMessage error={error} />
 
-      <section className={`panel verdict ${a ? a.proposed_verdict : 'incomplete'}`} aria-labelledby="verdict-title">
+      <section className={`panel verdict verdict-${a ? a.proposed_verdict : 'incomplete'}`} aria-labelledby="verdict-title">
         {a ? (
           <>
             <h2 id="verdict-title"><Badge value={a.proposed_verdict} /></h2>

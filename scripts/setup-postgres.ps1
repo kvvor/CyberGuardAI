@@ -1,7 +1,25 @@
 param([string]$PsqlPath = 'psql.exe')
 Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot) -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
-if (-not (Get-Command $PsqlPath -ErrorAction SilentlyContinue)) { throw 'psql.exe not found. Add PostgreSQL bin to PATH or supply -PsqlPath with its installed location.' }
+if (-not (Get-Command $PsqlPath -ErrorAction SilentlyContinue)) {
+    # psql.exe is not on PATH. First ask Windows where the installed PostgreSQL
+    # service keeps its programs (works for any drive, folder and version), then
+    # fall back to the standard installer locations.
+    $candidates = @()
+    foreach ($service in @(Get-CimInstance Win32_Service -Filter "Name LIKE 'postgresql%'" -ErrorAction SilentlyContinue)) {
+        if ($service.PathName -match '^"?(?<exe>[^"]+?pg_ctl\.exe)') {
+            $beside = Join-Path (Split-Path -Parent $Matches['exe']) 'psql.exe'
+            if (Test-Path -LiteralPath $beside) { $candidates += Get-Item -LiteralPath $beside }
+        }
+    }
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }) {
+        $candidates += Get-ChildItem -Path (Join-Path $base 'PostgreSQL\*\bin\psql.exe') -ErrorAction SilentlyContinue
+    }
+    $found = $candidates | Sort-Object { [version]($_.VersionInfo.ProductVersion -replace '[^0-9.].*$','') } -Descending -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $found) { throw 'psql.exe not found. Install PostgreSQL, or pass the location of psql.exe with -PsqlPath.' }
+    $PsqlPath = $found.FullName
+    Write-Host "Using $PsqlPath"
+}
 if (Test-Path -LiteralPath '.env.local') { throw '.env.local already exists; existing configuration was not changed' }
 $adminSecret = Read-Host 'PostgreSQL postgres password (local input only)' -AsSecureString
 $credential = New-Object System.Management.Automation.PSCredential('postgres', $adminSecret)
@@ -39,9 +57,16 @@ try {
     }
     if (Test-Path -LiteralPath '.env.local') { throw '.env.local already exists; not overwriting existing configuration' }
     $encodedPassword = [Uri]::EscapeDataString($appPassword)
-    $lines = @("DATABASE_URL=postgres://cyberguard_app:${encodedPassword}@127.0.0.1:5432/cyberguard?sslmode=disable", "TEST_DATABASE_URL=postgres://cyberguard_app:${encodedPassword}@127.0.0.1:5432/cyberguard_test?sslmode=disable")
+    $lines = @(
+        '# Local CyberGuard AI configuration. Never commit or share this file.',
+        "DATABASE_URL=postgres://cyberguard_app:${encodedPassword}@127.0.0.1:5432/cyberguard?sslmode=disable",
+        "TEST_DATABASE_URL=postgres://cyberguard_app:${encodedPassword}@127.0.0.1:5432/cyberguard_test?sslmode=disable",
+        '# Lets you create your account on the sign-in page of this local installation.',
+        '# Set to false after registering if other people can reach this computer.',
+        'PUBLIC_REGISTRATION_ENABLED=true'
+    )
     [IO.File]::WriteAllLines((Join-Path (Get-Location).Path '.env.local'), $lines)
-    Write-Host 'Local database configuration saved to ignored .env.local. No existing database was reset.'
+    Write-Host 'Local database configuration saved to .env.local (ignored by Git). No existing database was reset. Next: run scripts\setup.ps1'
 } finally {
     $env:PGPASSWORD = $previousPassword
     $appPassword = $null

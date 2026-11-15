@@ -1,8 +1,13 @@
 openapi: 3.0.3
 info:
   title: CyberGuard AI backend API
-  version: 0.1.0
-  description: Local development backend. Exact-origin credentialed CORS is supported; a same-origin frontend proxy is recommended. PostgreSQL integration validation requires local credentials.
+  version: 0.2.0
+  description: >-
+    Local backend. Every error is JSON {error: {code, message, request_id}}. Storage problems are reported as
+    DATABASE_SCHEMA_OUTDATED or DATABASE_UNAVAILABLE (503), never as a bare INTERNAL_ERROR. GET /health returns 503 with
+    DATABASE_SCHEMA_OUTDATED when migrations are missing. A verdict exists only when ai_execution.status is completed;
+    analyses with any other status carry evidence but no ai_assessment. JSON export wraps the analysis as
+    {export: {...}, analysis: {...}}. Exact-origin credentialed CORS is supported; a same-origin frontend proxy is recommended.
 servers:
   - url: /api/v1
 security:
@@ -129,6 +134,62 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/Error'}
+  /settings/ai-provider/models:
+    get:
+      operationId: listModels
+      description: Lists text models available to the saved OpenAI key, read live from the provider (metadata only, no inference, no email content). Works for a saved but disabled provider.
+      responses:
+        '200':
+          description: Model list or a provider failure code
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelList'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: listModelsForKey
+      description: Same as GET but uses the supplied key, which is not stored. Lets a model be chosen before the first save.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                api_key: {type: string, maxLength: 4096, writeOnly: true}
+      responses:
+        '200':
+          description: Model list or a provider failure code
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ModelList'}
+        '400': {$ref: '#/components/responses/Error'}
+  /analyses/{id}/virustotal:
+    parameters:
+      - {$ref: '#/components/parameters/AnalysisID'}
+    post:
+      operationId: recheckAttachmentReputation
+      description: Completes VirusTotal hash lookups that received no provider answer (local allowance, rate limit, timeout). Hashes that already have an answer are never requested again. An existing verdict is kept and the report gains the limitation REPUTATION_UPDATED_AFTER_ASSESSMENT.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [virustotal_consent]
+              properties:
+                virustotal_consent: {type: boolean, description: Must be true.}
+      responses:
+        '200': {$ref: '#/components/responses/Analysis'}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
   /auth/register:
     post:
       operationId: register
@@ -229,6 +290,7 @@ paths:
         - {name: verdict, in: query, schema: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}}
         - {name: mode, in: query, schema: {type: string, enum: [live], default: live}}
         - {name: sort, in: query, schema: {type: string, enum: [newest, oldest, risk_desc, risk_asc], default: newest}}
+        - {name: status, in: query, description: 'complete = validated assessment, partial = no verdict, legacy = historical weighted-score report. A verdict filter never matches an analysis without a verdict.', schema: {type: string, enum: [complete, partial, legacy]}}
         - {name: date_from, in: query, schema: {type: string}, description: Inclusive RFC3339 instant or UTC date}
         - {name: date_to, in: query, schema: {type: string}, description: Exclusive RFC3339 instant; a date includes the entire UTC day}
       responses:
@@ -407,6 +469,20 @@ components:
       required: true
       schema: {type: string}
   schemas:
+    ModelList:
+      type: object
+      required: [success, failure_code, models, selected]
+      properties:
+        success: {type: boolean}
+        failure_code: {type: string, description: 'Empty on success; otherwise a PROVIDER_* code.'}
+        selected: {type: string, description: Currently saved model.}
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              id: {type: string}
+              created: {type: integer}
     ProviderConfig:
       type: object
       properties:

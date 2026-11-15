@@ -1,4 +1,4 @@
-﻿# CyberGuard AI frontend
+# CyberGuard AI frontend
 
 React/JavaScript + Vite frontend for the documented Go API. All runtime API calls use the real backend; there is no production mock fallback. Tests mock fetch in isolation.
 
@@ -40,7 +40,7 @@ Production hosting must serve dist with SPA fallback and reverse proxy /api to G
 
 ## API and security
 
-Contract source: ../docs/openapi.yaml and backend-handoff.md. Cookie credentials are included. Setup sessions cannot access application routes. /auth/me PASSWORD_CHANGE_REQUIRED recovers setup-only state, and the readable cyberguard_csrf cookie supplies CSRF after reload. Password changes invalidate sessions and return to login. Network errors remain explicit errors.
+Contract source: ../docs/openapi.yaml. Cookie credentials are included. Setup sessions cannot access application routes. /auth/me PASSWORD_CHANGE_REQUIRED recovers setup-only state, and the readable cyberguard_csrf cookie supplies CSRF after reload. Password changes invalidate sessions and return to login. Network errors remain explicit errors.
 
 Uploads are checked against the public max_email_size, with the documented 10 MiB fallback. File extensions are EML/MSG only. External processing consent defaults to false. Demo requests use source_type=demo and backend-provided sample IDs. Suspicious URLs render only as text. No email HTML rendering, remote email images, attachment execution, stored passwords, session identifiers or API keys.
 
