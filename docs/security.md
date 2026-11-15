@@ -1,5 +1,13 @@
 # Security and residual risks
 
+Per-user AI credentials are AES-256-GCM encrypted with user/provider/version-bound
+associated data. PROVIDER_MASTER_KEY resides in the server environment or ignored
+local configuration. Provider endpoints require full authentication and CSRF on
+mutations. Metadata connection tests send no email or inference requests. Read
+[AI provider policy](ai-providers.md) for isolation and explicit operator fallback.
+Contextual quotes are checked against input; their interpretation is not independently
+verified. Model influence never reduces deterministic risk. No analysis URL is fetched.
+
 Passwords use salted Argon2id with 19 MiB, two passes, one lane, and 32-byte
 outputs, following the OWASP baseline:
 https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html

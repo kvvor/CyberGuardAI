@@ -5,6 +5,7 @@ import (
 	"context"
 	"cyberguard.local/backend/internal/auth"
 	"cyberguard.local/backend/internal/testfixtures"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,7 @@ import (
 )
 
 func TestPostgresHTTPWorkflow(t *testing.T) {
+	t.Setenv("PROVIDER_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32)))
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not configured")
@@ -89,6 +91,15 @@ func TestPostgresHTTPWorkflow(t *testing.T) {
 	}
 	a, csrf, email := makeUser()
 	b, csrfB, _ := makeUser()
+	settings := request(a, "POST", "/settings/ai-provider", csrf, map[string]any{"provider": "openai", "model": "test-model", "api_key": "synthetic-key-never-live", "enabled": true}, 200)
+	if bytes.Contains(settings, []byte("synthetic-key-never-live")) {
+		t.Fatal("credential exposed")
+	}
+	settings = request(b, "GET", "/settings/ai-provider", "", nil, 200)
+	if bytes.Contains(settings, []byte("test-model")) {
+		t.Fatal("provider isolation failed")
+	}
+	request(a, "DELETE", "/settings/ai-provider", csrf, nil, 204)
 	for name, data := range map[string][]byte{"synthetic.eml": []byte("From: test@example.test\r\nSubject: Synthetic phishing\r\n\r\nUrgent: verify your password at https://192.0.2.1/login"), "synthetic.msg": testfixtures.MSG()} {
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)

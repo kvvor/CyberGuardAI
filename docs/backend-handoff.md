@@ -65,6 +65,11 @@ blocks setup access to application features. Invalid credentials use generic
 
 ## Analysis contract
 
+See [AI provider integration](ai-providers.md) for authenticated provider settings,
+encryption setup, consent, new execution metadata, URL observables and hybrid policy.
+The provider API supports only OpenAI. Never persist entered keys in browser
+storage or cookies. Clear key input after submitting; responses never echo it.
+
 POST /analyses accepts JSON:
 {"source_type":"paste","text":"Email body","sender":"sender@example.com","subject":"Review","external_processing_consent":false}
 
@@ -80,7 +85,7 @@ ai_assessment?}. report contains verdict, risk_score, risk_level, scoring_versio
 attack_types, indicators, iocs, mitre_mappings, limitations, manual_review_required,
 ai_status and email metadata (including attachments). Narratives have en/ru/kk
 keys. Static narratives are predefined. Demo mode uses predefined_demo and never
-calls the model. Successful external calls use completed; failures use unavailable
+calls the model. Successful external calls use completed; new failures use failed or rate_limited (older reports may use unavailable)
 and preserve static results. Rule-only reports are partial.
 
 Raw bodies, full headers and binary attachments are removed before persistence.

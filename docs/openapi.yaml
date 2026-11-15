@@ -8,6 +8,66 @@ servers:
 security:
   - session: []
 paths:
+  /settings/ai-provider:
+    get:
+      description: Current user's provider metadata only; API keys are never returned
+      responses:
+        '200': {$ref: '#/components/responses/ProviderConfig'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+    post:
+      description: Save OpenAI settings. Empty or omitted api_key preserves the existing key. Updates reset connection status to untested.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, model, enabled]
+              properties:
+                provider: {type: string, enum: [openai]}
+                model: {type: string, maxLength: 128}
+                enabled: {type: boolean}
+                api_key: {type: string, format: password, writeOnly: true, maxLength: 4096}
+      responses:
+        '200': {$ref: '#/components/responses/ProviderConfig'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+    delete:
+      description: Erases encrypted credentials and disables AI; preserves a disabled settings record so operator fallback does not reactivate AI
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '204': {description: Credentials removed}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+  /settings/ai-provider/test:
+    post:
+      description: Explicit model metadata request to OpenAI. Validates credentials/model access without inference or email content. Does not prove Responses compatibility or inference quota. No inference tokens are requested.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Test outcome; success may be false
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: {type: boolean}
+                  failure_code: {type: string}
+                  test_type: {type: string, enum: [model_metadata]}
+                  inference_performed: {type: boolean, enum: [false]}
+                  inference_tokens: {type: integer, enum: [0]}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '403': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
   /auth/register:
     post:
       operationId: register
@@ -83,6 +143,7 @@ paths:
                 subject: {type: string}
                 demo_sample_id: {type: string}
                 external_processing_consent: {type: boolean, default: false}
+                ai_requested: {type: boolean, description: Defaults to consent for backward compatibility; true requires explicit consent before external processing}
           multipart/form-data:
             schema:
               type: object
@@ -90,6 +151,7 @@ paths:
               properties:
                 file: {type: string, format: binary, description: EML or MSG up to 10 MiB}
                 external_processing_consent: {type: boolean, default: false}
+                ai_requested: {type: boolean, description: Literal true requests AI; consent also requests AI for existing clients}
       responses:
         '201': {$ref: '#/components/responses/Analysis'}
         '400': {$ref: '#/components/responses/Error'}
@@ -301,6 +363,41 @@ components:
       required: true
       schema: {type: string}
   schemas:
+    ProviderConfig:
+      type: object
+      properties:
+        provider: {type: string, enum: [openai]}
+        model: {type: string}
+        enabled: {type: boolean}
+        has_credential: {type: boolean}
+        connection_status: {type: string, description: 'not_configured, untested, credential_validated, or stable provider failure code'}
+        last_success_at: {type: string, format: date-time, nullable: true}
+        source: {type: string, enum: [user, operator]}
+    AIExecution:
+      type: object
+      properties:
+        requested: {type: boolean}
+        consent: {type: boolean}
+        configured: {type: boolean}
+        provider: {type: string}
+        model: {type: string}
+        configuration_source: {type: string}
+        status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited]}
+        failure_code: {type: string}
+        static_verdict: {type: string}
+        deterministic_risk_score: {type: integer}
+        ai_proposed_verdict: {type: string}
+        final_verdict: {type: string}
+        influence_code: {type: string}
+    ContextualFinding:
+      type: object
+      properties:
+        type: {type: string}
+        quote: {type: string}
+        source: {type: string, enum: [subject, text_body, html_body]}
+        reason: {type: string}
+        confidence: {type: string, enum: [low, medium, high]}
+        verification_status: {type: string}
     Finding:
       type: object
       required: [id, rule_id, type, severity, evidence, evidence_source, description_code, analysis_method, status]
@@ -318,6 +415,10 @@ components:
       type: object
       required: [type, value, normalized_value, defanged_value, source]
       properties:
+        resource_category: {type: string}
+        original_value: {type: string}
+        finding_ids: {type: array, items: {type: string}}
+        suspicion_status: {type: string}
         type: {type: string, enum: [url, domain, ip, email, hash, sha256]}
         value: {type: string}
         normalized_value: {type: string}
@@ -352,6 +453,7 @@ components:
     AIAssessment:
       type: object
       properties:
+        contextual_findings: {type: array, items: {$ref: '#/components/schemas/ContextualFinding'}}
         proposed_verdict: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}
         suspected_attack_types: {type: array, items: {type: string}}
         social_engineering_patterns: {type: array, items: {type: string}}
@@ -395,6 +497,8 @@ components:
       type: object
       required: [id, mode, created_at, report, status, explanations, recommendations]
       properties:
+        ai_execution: {$ref: '#/components/schemas/AIExecution'}
+        top_findings: {type: array, maxItems: 5, items: {$ref: '#/components/schemas/Finding'}}
         id: {type: string, format: uuid}
         mode: {type: string, enum: [live, demo]}
         created_at: {type: string, format: date-time}
@@ -416,7 +520,7 @@ components:
             limitations: {type: array, items: {type: string}}
             manual_review_required: {type: boolean}
             email: {$ref: '#/components/schemas/EmailMetadata'}
-            ai_status: {type: string, enum: [not_requested, completed, unavailable, predefined_demo]}
+            ai_status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited, unavailable, predefined_demo]}
     NewPassword:
       type: object
       required: [new_password, confirm_password]
@@ -450,6 +554,11 @@ components:
             message: {type: string}
             request_id: {type: string}
   responses:
+    ProviderConfig:
+      description: Non-secret provider configuration
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ProviderConfig'}
     Analysis:
       description: Saved analysis owned by the current authenticated user
       content:
