@@ -10,7 +10,7 @@ func TestEvidenceNeverUsesBodyAuthenticationOrWeights(t *testing.T) {
 	e, _ := emailparser.Parse([]byte("Urgent: spf=pass dkim=pass dmarc=pass. Please verify your password."), "", "paste", "", "")
 	r := Analyze(e)
 	PrepareEvidence(&r)
-	if r.Score != 0 || r.Verdict != "inconclusive" || len(r.MITRE) != 0 || r.Version != "3.0.0" {
+	if r.Score != 0 || r.Verdict != "inconclusive" || r.Version != "3.0.0" {
 		t.Fatal(r)
 	}
 	for _, a := range r.Authentication {

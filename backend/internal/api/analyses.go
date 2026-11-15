@@ -3,7 +3,6 @@ package api
 import (
 	"bytes"
 	"cyberguard.local/backend/internal/auth"
-	"cyberguard.local/backend/internal/demo"
 	"cyberguard.local/backend/internal/detection"
 	"cyberguard.local/backend/internal/emailparser"
 	ai "cyberguard.local/backend/internal/openai"
@@ -37,7 +36,6 @@ type stored struct {
 }
 
 func (s *Server) analysisRoutes(p *mux.Router) {
-	p.HandleFunc("/demo/samples", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, demo.Samples()) }).Methods("GET")
 	p.HandleFunc("/analyses", s.create).Methods("POST")
 	p.HandleFunc("/analyses", s.history).Methods("GET")
 	p.HandleFunc("/analyses/{id}", s.detail).Methods("GET", "DELETE")
@@ -52,7 +50,6 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	consent := false
 	vtConsent := false
 	requested := false
-	demoID := ""
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if err = r.ParseMultipartForm(1 << 20); err != nil {
 			fail(w, r, 400, "INVALID_UPLOAD")
@@ -91,11 +88,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			Consent     bool   `json:"external_processing_consent"`
 			VTConsent   bool   `json:"virustotal_consent"`
 			AIRequested *bool  `json:"ai_requested"`
-			DemoID      string `json:"demo_sample_id"`
 		}
 		d := json.NewDecoder(r.Body)
 		d.DisallowUnknownFields()
-		if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF || (in.Source != "paste" && in.Source != "demo") {
+		if d.Decode(&in) != nil || d.Decode(new(any)) != io.EOF || in.Source != "paste" {
 			fail(w, r, 400, "INVALID_REQUEST")
 			return
 		}
@@ -110,13 +106,6 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		if in.AIRequested != nil {
 			requested = *in.AIRequested
 		}
-		if in.Source == "demo" {
-			demoID = in.DemoID
-			if demoID == "" {
-				fail(w, r, 400, "UNKNOWN_DEMO_SAMPLE")
-				return
-			}
-		}
 	}
 	if err != nil {
 		fail(w, r, 400, err.Error())
@@ -124,24 +113,11 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	report := detection.Analyze(e)
 	mode := "live"
-	var assessment *ai.Assessment
-	if demoID != "" {
-		report, err = demo.Analyze(demoID)
-		if err != nil {
-			fail(w, r, 400, "UNKNOWN_DEMO_SAMPLE")
-			return
-		}
-		mode = "demo"
-		e = report.Email
-	}
-	execution := AIExecution{Status: "not_requested", StaticVerdict: report.Verdict, StaticScore: report.Score, Final: report.Verdict, Influence: "STATIC_ONLY"}
-	if mode != "demo" {
-		report.AttachmentReputation, report.VirusTotalStatus = s.executeVirusTotal(r.Context(), owner(r), vtConsent, report.Email.Attachments)
-		execution, assessment = s.executeAI(r.Context(), owner(r), requested, consent, &report)
-		report.AIStatus = execution.Status
-		if execution.Failure != "" {
-			report.Limitations = append(report.Limitations, execution.Failure)
-		}
+	report.AttachmentReputation, report.VirusTotalStatus = s.executeVirusTotal(r.Context(), owner(r), vtConsent, report.Email.Attachments)
+	execution, assessment := s.executeAI(r.Context(), owner(r), requested, consent, &report)
+	report.AIStatus = execution.Status
+	if execution.Failure != "" {
+		report.Limitations = append(report.Limitations, execution.Failure)
 	}
 	report.Email.Text = ""
 	report.Email.HTML = ""
@@ -153,7 +129,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		row.TopFindings = row.TopFindings[:5]
 	}
 	row.Status = "partial"
-	if mode == "demo" || assessment != nil {
+	if assessment != nil {
 		row.Status = "complete"
 	}
 	row.Explanations = map[string]string{}
@@ -275,7 +251,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "live"
 	}
-	if mode != "live" && mode != "demo" {
+	if mode != "live" {
 		fail(w, r, 400, "INVALID_FILTER")
 		return
 	}
@@ -326,7 +302,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	for verdict, count := range verdicts {
 		result[verdict+"_count"] = count
 	}
-	for _, group := range []struct{ name, path, field string }{{"common_indicators", "indicators", "rule_id"}, {"common_attack_types", "attack_types", ""}, {"mitre_frequency", "mitre_mappings", "technique_id"}} {
+	for _, group := range []struct{ name, path, field string }{{"common_indicators", "indicators", "rule_id"}, {"common_attack_types", "attack_types", ""}} {
 		expr := "item #>> '{}'"
 		if group.field != "" {
 			expr = "item ->> '" + group.field + "'"
@@ -374,9 +350,6 @@ func pdfReport(row stored, lang string) ([]byte, error) {
 	}
 	line(row.AIExecution.Influence)
 	label := func(key string) string { return reports.Label(lang, key) }
-	if row.Mode == "demo" {
-		line(label("synthetic"))
-	}
 	line(label("id") + ": " + row.ID)
 	line(label("date") + ": " + row.Created.Format(time.RFC3339))
 	line(label("subject") + ": " + row.Report.Email.Subject)
@@ -437,10 +410,6 @@ func pdfReport(row stored, lang string) ([]byte, error) {
 			}
 			break
 		}
-	}
-	line(label("mitre"))
-	for _, m := range row.Report.MITRE {
-		line(m.ID + " " + m.Name + " (" + m.Status + ")")
 	}
 	line(label("limitations"))
 	for _, l := range row.Report.Limitations {

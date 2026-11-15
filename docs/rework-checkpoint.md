@@ -10,7 +10,7 @@ Implementation checklist (unchecked items are not complete):
 - [ ] VirusTotal hash-only client, independent consent, persistence and UI.
 - [ ] Structured authentication and deterministic evidence IDs.
 - [ ] Replace weighted final classification with validated OpenAI verdicts.
-- [ ] Remove active demo and MITRE features, preserve historical readability.
+- [x] Remove active demo and MITRE features, preserve historical readability.
 - [ ] Provider settings, analyzer, compact reports, dashboard and three languages.
 - [ ] Portable configuration and Windows startup/install scripts.
 - [ ] Full backend/frontend/PostgreSQL/end-to-end validation and documentation.
@@ -60,3 +60,12 @@ PostgreSQL/backend tests and all 44 frontend tests, lint and build pass. Updated
 old integration assertion that expected phishing without any model execution.
 Semantic validation of arbitrary model prose, complete feature removal, queued VT
 batches, dashboard failure aggregation and Windows portability are still pending.
+
+## Feature removal increment
+
+Removed live demo route/submission/UI/translations and mapping generation, report
+sections, charts, schema and labels. Demo samples are test-only now. Historical
+JSON remains in the database; obsolete mapping fields are omitted from read APIs.
+Removed heuristic score accumulation, keyword judgments and Hybrid adjustment code.
+Backend/PostgreSQL tests and 44 frontend tests, lint/build passed. One old UI test
+asserting a removed badge was updated to require its absence and preserve reading.

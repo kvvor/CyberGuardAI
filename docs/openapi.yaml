@@ -198,11 +198,10 @@ paths:
               additionalProperties: false
               required: [source_type]
               properties:
-                source_type: {type: string, enum: [paste, demo]}
+                source_type: {type: string, enum: [paste]}
                 text: {type: string}
                 sender: {type: string}
                 subject: {type: string}
-                demo_sample_id: {type: string}
                 external_processing_consent: {type: boolean, default: false}
                 virustotal_consent: {type: boolean, default: false, description: Separate consent to transmit attachment SHA-256 hashes}
                 ai_requested: {type: boolean, description: Defaults to consent for backward compatibility; true requires explicit consent before external processing}
@@ -228,7 +227,7 @@ paths:
         - {name: page_size, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
         - {name: search, in: query, schema: {type: string}}
         - {name: verdict, in: query, schema: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}}
-        - {name: mode, in: query, schema: {type: string, enum: [live, demo], default: live}}
+        - {name: mode, in: query, schema: {type: string, enum: [live], default: live}}
         - {name: sort, in: query, schema: {type: string, enum: [newest, oldest, risk_desc, risk_asc], default: newest}}
         - {name: date_from, in: query, schema: {type: string}, description: Inclusive RFC3339 instant or UTC date}
         - {name: date_to, in: query, schema: {type: string}, description: Exclusive RFC3339 instant; a date includes the entire UTC day}
@@ -286,7 +285,7 @@ paths:
     get:
       parameters:
         - {name: period, in: query, schema: {type: string, enum: ['7', '30', '90', all], default: '30'}}
-        - {name: mode, in: query, schema: {type: string, enum: [live, demo], default: live}}
+        - {name: mode, in: query, schema: {type: string, enum: [live], default: live}}
       responses:
         '200':
           description: Owner-scoped PostgreSQL aggregates
@@ -303,30 +302,12 @@ paths:
                   activity_series: {type: array, items: {type: object, properties: {date: {type: string}, count: {type: integer}}}}
                   common_indicators: {type: array, items: {$ref: '#/components/schemas/Frequency'}}
                   common_attack_types: {type: array, items: {$ref: '#/components/schemas/Frequency'}}
-                  mitre_frequency: {type: array, items: {$ref: '#/components/schemas/Frequency'}}
                   recent_analyses: {type: array, items: {$ref: '#/components/schemas/Analysis'}}
                   legitimate_count: {type: integer}
                   suspicious_count: {type: integer}
                   phishing_count: {type: integer}
                   inconclusive_count: {type: integer}
         '400': {$ref: '#/components/responses/Error'}
-        '401': {$ref: '#/components/responses/Error'}
-        '403': {$ref: '#/components/responses/Error'}
-  /demo/samples:
-    get:
-      responses:
-        '200':
-          description: Synthetic demonstration metadata
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {type: string}
-                    name: {type: string}
-                    synthetic: {type: boolean, enum: [true]}
         '401': {$ref: '#/components/responses/Error'}
         '403': {$ref: '#/components/responses/Error'}
   /auth/login:
@@ -496,15 +477,6 @@ components:
         detected_mime: {type: string}
         size: {type: integer, minimum: 0}
         sha256: {type: string}
-    MitreMapping:
-      type: object
-      properties:
-        technique_id: {type: string}
-        technique_name: {type: string}
-        tactic: {type: string}
-        mapping_status: {type: string, enum: [suspected, supported]}
-        evidence_ids: {type: array, items: {type: string}}
-        official_url: {type: string, format: uri}
     LocalizedText:
       type: object
       required: [en, ru, kk]
@@ -565,7 +537,7 @@ components:
         ai_execution: {$ref: '#/components/schemas/AIExecution'}
         top_findings: {type: array, maxItems: 5, items: {$ref: '#/components/schemas/Finding'}}
         id: {type: string, format: uuid}
-        mode: {type: string, enum: [live, demo]}
+        mode: {type: string, enum: [live]}
         created_at: {type: string, format: date-time}
         status: {type: string, enum: [complete, partial]}
         explanations: {$ref: '#/components/schemas/LocalizedText'}
@@ -581,11 +553,10 @@ components:
             attack_types: {type: array, items: {type: string}}
             indicators: {type: array, items: {$ref: '#/components/schemas/Finding'}}
             iocs: {type: array, items: {$ref: '#/components/schemas/IOC'}}
-            mitre_mappings: {type: array, items: {$ref: '#/components/schemas/MitreMapping'}}
             limitations: {type: array, items: {type: string}}
             manual_review_required: {type: boolean}
             email: {$ref: '#/components/schemas/EmailMetadata'}
-            ai_status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited, unavailable, predefined_demo]}
+            ai_status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited, unavailable]}
     NewPassword:
       type: object
       required: [new_password, confirm_password]

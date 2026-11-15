@@ -103,6 +103,17 @@ func History(ctx context.Context, db *pgxpool.Pool, owner string, f HistoryFilte
 		if !json.Valid(b) {
 			return nil, 0, fmt.Errorf("invalid stored report")
 		}
+		// Remove obsolete presentation metadata from responses, never from storage.
+		var saved map[string]json.RawMessage
+		if err := json.Unmarshal(b, &saved); err != nil {
+			return nil, 0, err
+		}
+		var report map[string]json.RawMessage
+		if err := json.Unmarshal(saved["report"], &report); err == nil {
+			delete(report, "mitre_mappings")
+			saved["report"], _ = json.Marshal(report)
+			b, _ = json.Marshal(saved)
+		}
 		items = append(items, json.RawMessage(b))
 	}
 	return items, total, rows.Err()

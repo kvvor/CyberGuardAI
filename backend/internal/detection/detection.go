@@ -35,14 +35,6 @@ type IOC struct {
 	Defanged   string   `json:"defanged_value"`
 	Source     string   `json:"source"`
 }
-type Mapping struct {
-	ID       string   `json:"technique_id"`
-	Name     string   `json:"technique_name"`
-	Tactic   string   `json:"tactic"`
-	Status   string   `json:"mapping_status"`
-	Evidence []string `json:"evidence_ids"`
-	URL      string   `json:"official_url"`
-}
 type Report struct {
 	Evidence             []Evidence          `json:"evidence,omitempty"`
 	Authentication       []Authentication    `json:"authentication,omitempty"`
@@ -55,7 +47,6 @@ type Report struct {
 	AttackTypes          []string            `json:"attack_types"`
 	Indicators           []Finding           `json:"indicators"`
 	IOCs                 []IOC               `json:"iocs"`
-	MITRE                []Mapping           `json:"mitre_mappings,omitempty"`
 	Limitations          []string            `json:"limitations"`
 	Manual               bool                `json:"manual_review_required"`
 	Email                emailparser.Email   `json:"email"`
@@ -73,21 +64,18 @@ func Defang(s string) string {
 	return strings.ReplaceAll(s, "@", "[@]")
 }
 func Analyze(e emailparser.Email) Report {
-	r := Report{Email: e, Verdict: "inconclusive", Level: "low", Version: "2.0.0", AttackTypes: []string{}, Indicators: []Finding{}, IOCs: []IOC{}, MITRE: []Mapping{}, Limitations: []string{"HEURISTIC_NOT_PROBABILITY", "AUTHENTICATION_HEADERS_UNVERIFIED", "NO_REPUTATION_LOOKUP"}, Manual: true, AIStatus: "not_requested"}
+	r := Report{Email: e, Verdict: "inconclusive", Level: "low", Version: "2.0.0", AttackTypes: []string{}, Indicators: []Finding{}, IOCs: []IOC{}, Limitations: []string{"HEURISTIC_NOT_PROBABILITY", "AUTHENTICATION_HEADERS_UNVERIFIED", "NO_REPUTATION_LOOKUP"}, Manual: true, AIStatus: "not_requested"}
 	r.Limitations = append(r.Limitations, e.Warnings...)
-	add := func(rule, ev, source string, weight int) {
+	add := func(rule, ev, source string) {
 		if len(r.Indicators) >= 128 {
 			return
 		}
 		if len(ev) > 2048 {
 			ev = ev[:2048]
 		}
-		severity := "medium"
-		if weight >= 25 {
-			severity = "high"
-		}
+		severity := "low"
 		r.Indicators = append(r.Indicators, Finding{fmt.Sprintf("e%d", len(r.Indicators)+1), rule, "static", severity, ev, source, rule, "deterministic", "observed"})
-		r.Score += weight
+		// Technical observations do not determine a verdict.
 	}
 	attack := func(s string) {
 		for _, x := range r.AttackTypes {
@@ -106,26 +94,26 @@ func Analyze(e emailparser.Email) Report {
 		return strings.ToLower(p[len(p)-1])
 	}
 	if e.ReplyTo != "" && domain(e.Sender) != "" && domain(e.ReplyTo) != domain(e.Sender) {
-		add("DOMAIN_MISMATCH", e.Sender+" / "+e.ReplyTo, "headers", 15)
+		add("DOMAIN_MISMATCH", e.Sender+" / "+e.ReplyTo, "headers")
 		attack("impersonation")
 	}
 	if strings.Contains(strings.ToLower(e.Sender), "xn--") {
-		add("PUNYCODE_SENDER", e.Sender, "headers", 10)
+		add("PUNYCODE_SENDER", e.Sender, "headers")
 	}
 	if a, err := mail.ParseAddress(e.Sender); err == nil {
 		if displayed, err := mail.ParseAddress(a.Name); err == nil && !strings.EqualFold(displayed.Address, a.Address) {
-			add("DISPLAY_NAME_SPOOFING", e.Sender, "headers", 25)
+			add("DISPLAY_NAME_SPOOFING", e.Sender, "headers")
 			attack("impersonation")
 		}
 		for _, brand := range []string{"microsoft", "paypal", "google", "apple", "amazon"} {
 			host := domain(e.Sender)
 			label := strings.Split(host, ".")[0]
 			if strings.Contains(strings.ToLower(a.Name), brand) && host != brand+".com" && !strings.HasSuffix(host, "."+brand+".com") {
-				add("BRAND_DOMAIN_MISMATCH", e.Sender, "headers", 15)
+				add("BRAND_DOMAIN_MISMATCH", e.Sender, "headers")
 				attack("impersonation")
 			}
 			if label != brand && lookalike(label, brand) {
-				add("LOOKALIKE_DOMAIN", host+" resembles "+brand, "headers", 20)
+				add("LOOKALIKE_DOMAIN", host+" resembles "+brand, "headers")
 				attack("impersonation")
 			}
 		}
@@ -133,22 +121,7 @@ func Analyze(e emailparser.Email) Report {
 	for _, value := range e.AuthenticationResults {
 		lower := strings.ToLower(value)
 		if strings.Contains(lower, "spf=fail") || strings.Contains(lower, "dkim=fail") || strings.Contains(lower, "dmarc=fail") {
-			add("REPORTED_AUTHENTICATION_FAILURE", value, "untrusted_header", 5)
-		}
-	}
-	body := strings.ToLower(e.Text + " " + e.Subject + " " + e.HTML)
-	for _, rule := range []struct {
-		code   string
-		terms  []string
-		weight int
-		kind   string
-	}{{"CREDENTIAL_REQUEST", []string{"verify your password", "confirm your password", "enter your password", "подтвердите пароль", "құпия сөзіңізді"}, 30, "credential_phishing"}, {"URGENCY", []string{"urgent", "immediately", "срочно", "шұғыл"}, 10, "other"}, {"ACCOUNT_SUSPENSION", []string{"account suspended", "account will be closed", "аккаунт заблокирован"}, 20, "credential_phishing"}, {"PAYMENT_REQUEST", []string{"wire transfer", "new bank account", "pay this invoice", "переведите деньги"}, 20, "invoice_fraud"}, {"BEC_SECRECY", []string{"keep this confidential", "do not call", "gift cards"}, 25, "business_email_compromise"}} {
-		for _, term := range rule.terms {
-			if strings.Contains(body, term) {
-				add(rule.code, term, "body", rule.weight)
-				attack(rule.kind)
-				break
-			}
+			add("REPORTED_AUTHENTICATION_FAILURE", value, "untrusted_header")
 		}
 	}
 	seen := map[string]bool{}
@@ -208,7 +181,7 @@ func Analyze(e emailparser.Email) Report {
 					shown, _ := url.Parse(shownURL)
 					dest, _ := url.Parse(destURL)
 					if shown != nil && dest != nil && shown.Hostname() != "" && !strings.EqualFold(shown.Hostname(), dest.Hostname()) {
-						add("LINK_DESTINATION_MISMATCH", n.FirstChild.Data+" -> "+href, "html", 25)
+						add("LINK_DESTINATION_MISMATCH", n.FirstChild.Data+" -> "+href, "html")
 					}
 				}
 			}
@@ -251,10 +224,10 @@ func Analyze(e emailparser.Email) Report {
 		}
 		if net.ParseIP(u.Hostname()) != nil {
 			ioc("ip", u.Hostname(), "url")
-			add("IP_LINK", raw, "url", 20)
+			add("IP_LINK", raw, "url")
 		}
 		if u.User != nil || strings.Contains(u.Hostname(), "xn--") {
-			add("SUSPICIOUS_URL", raw, "url", 15)
+			add("SUSPICIOUS_URL", raw, "url")
 		}
 	}
 	for _, x := range emails.FindAllString(e.Text+" "+e.Sender+" "+e.ReplyTo, -1) {
@@ -275,59 +248,22 @@ func Analyze(e emailparser.Email) Report {
 	for _, a := range e.Attachments {
 		ioc("sha256", a.SHA256, "attachment")
 		if a.Declared != "" && a.Declared != "application/octet-stream" && !strings.HasPrefix(a.Detected, a.Declared) && !(strings.HasPrefix(a.Declared, "text/") && strings.HasPrefix(a.Detected, "text/")) {
-			add("MIME_SIGNATURE_MISMATCH", a.Filename+": "+a.Declared+" / "+a.Detected, "attachment", 15)
+			add("MIME_SIGNATURE_MISMATCH", a.Filename+": "+a.Declared+" / "+a.Detected, "attachment")
 		}
 		ext := strings.ToLower(filepath.Ext(a.Filename))
 		if strings.Contains("|.exe|.dll|.js|.vbs|.ps1|.bat|.cmd|.scr|.hta|", "|"+ext+"|") {
-			add("DANGEROUS_ATTACHMENT", a.Filename, "attachment", 35)
+			add("DANGEROUS_ATTACHMENT", a.Filename, "attachment")
 			attack("suspected_malware_delivery")
 			attack("spearphishing_attachment")
 		}
-		if strings.Count(a.Filename, ".") > 1 {
-			add("DOUBLE_EXTENSION", a.Filename, "attachment", 10)
+		if strings.Count(a.Filename, ".") > 1 && (ext == ".exe" || ext == ".scr" || ext == ".com" || ext == ".js" || ext == ".vbs" || ext == ".bat") {
+			add("DOUBLE_EXTENSION", a.Filename, "attachment")
 		}
 		if ext == ".docm" || ext == ".xlsm" {
-			add("MACRO_CAPABLE_DOCUMENT", a.Filename, "attachment", 15)
+			add("MACRO_CAPABLE_DOCUMENT", a.Filename, "attachment")
 		}
 		if ext == ".zip" || ext == ".rar" || ext == ".7z" {
-			add("ARCHIVE_NOT_INSPECTED", a.Filename, "attachment", 5)
-		}
-	}
-	if r.Score > 100 {
-		r.Score = 100
-	}
-	if r.Score >= 70 {
-		r.Level = "critical"
-	} else if r.Score >= 45 {
-		r.Level = "high"
-	} else if r.Score >= 20 {
-		r.Level = "medium"
-	}
-	if r.Score >= 60 {
-		r.Verdict = "phishing"
-	} else if r.Score >= 20 {
-		r.Verdict = "suspicious"
-	}
-	if r.Score >= 20 {
-		ids := []string{}
-		for _, f := range r.Indicators {
-			ids = append(ids, f.ID)
-		}
-		r.MITRE = append(r.MITRE, Mapping{"T1566", "Phishing", "Initial Access", "suspected", ids, "https://attack.mitre.org/techniques/T1566/"})
-		if len(links) > 0 {
-			attack("spearphishing_link")
-			r.MITRE = append(r.MITRE, Mapping{"T1566.002", "Spearphishing Link", "Initial Access", "suspected", ids, "https://attack.mitre.org/techniques/T1566/002/"})
-		}
-		for _, kind := range r.AttackTypes {
-			if kind == "spearphishing_attachment" {
-				attachmentIDs := []string{}
-				for _, f := range r.Indicators {
-					if f.Rule == "DANGEROUS_ATTACHMENT" {
-						attachmentIDs = append(attachmentIDs, f.ID)
-					}
-				}
-				r.MITRE = append(r.MITRE, Mapping{"T1566.001", "Spearphishing Attachment", "Initial Access", "suspected", attachmentIDs, "https://attack.mitre.org/techniques/T1566/001/"})
-			}
+			add("ARCHIVE_NOT_INSPECTED", a.Filename, "attachment")
 		}
 	}
 	for i := range r.IOCs {

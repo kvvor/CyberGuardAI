@@ -65,77 +65,10 @@ blocks setup access to application features. Invalid credentials use generic
 
 ## Analysis contract
 
-See [AI provider integration](ai-providers.md) for authenticated provider settings,
-encryption setup, consent, new execution metadata, URL observables and hybrid policy.
-The provider API supports only OpenAI. Never persist entered keys in browser
-storage or cookies. Clear key input after submitting; responses never echo it.
+See [evidence pipeline](evidence-pipeline.md), [VirusTotal](virustotal.md), and
+[OpenAPI](openapi.yaml). Upload EML/MSG or paste email text. Provider credentials
+are configured in Settings. OpenAI and VirusTotal have separate per-analysis
+consent. New reports use validated model verdicts; missing AI produces partial
+results without an AI assessment. Historical records remain readable.
 
-POST /analyses accepts JSON:
-{"source_type":"paste","text":"Email body","sender":"sender@example.com","subject":"Review","external_processing_consent":false}
-
-Multipart uploads use file (.eml or .msg, up to 10 MiB) and
-external_processing_consent=true only after explicit consent. MSG flags partial
-evidence; nested embedded emails are not analyzed.
-
-GET /demo/samples returns six synthetic sample IDs. Create a demo with:
-{"source_type":"demo","demo_sample_id":"credentials"}
-
-201 response: {id,mode,created_at,status,report,explanations,recommendations,
-ai_assessment?}. report contains verdict, risk_score, risk_level, scoring_version,
-attack_types, indicators, iocs, mitre_mappings, limitations, manual_review_required,
-ai_status and email metadata (including attachments). Narratives have en/ru/kk
-keys. Static narratives are predefined. Demo mode uses predefined_demo and never
-calls the model. Successful external calls use completed; new failures use failed or rate_limited (older reports may use unavailable)
-and preserve static results. Rule-only reports are partial.
-
-Raw bodies, full headers and binary attachments are removed before persistence.
-Evidence snippets and metadata can still contain private data.
-
-## History, statistics and export
-
-GET /analyses?page=1&page_size=20&search=...&verdict=phishing&mode=live returns
-{items,total,page,page_size}. sort accepts newest, oldest, risk_desc, risk_asc; date_from/date_to accept UTC dates or RFC3339 timestamps. Page sizes are bounded to 100.
-GET /analyses/{id} reads; DELETE /analyses/{id} deletes with 204.
-GET /analyses/{id}/export?format=pdf|json&lang=en|ru|kk downloads reports.
-GET /dashboard/stats?period=7|30|90|all&mode=live|demo returns total_analyses,
-verdict_distribution, risk_distribution, activity (date/count map),
-activity_series ({date,count} array), common_indicators, common_attack_types and
-mitre_frequency ({name,count} arrays).
-
-Every query uses the session owner ID. Foreign IDs yield the same 404 as missing
-IDs. Live is the default mode. Exports use cookies, never URL tokens. PDF embeds
-Noto Sans under SIL OFL (license bundled in backend/internal/reports/assets).
-All Kazakh-specific characters have glyph-coverage tests. Section labels and verdicts are localized; forensic evidence and technical codes remain verbatim.
-
-## Validation and remaining work
-
-Build, unit tests and go vet pass from backend/. Tests cover hashing, policy,
-synthetic EML/MSG parsing, scoring, unauthorized access, Origin, rate limiting,
-demo, PDF/Kazakh glyphs, and mocked OpenAI success/refusal/invalid-output/retries.
-
-PostgreSQL 18 was available locally. Migrations were applied to `cyberguard` and
-the isolated `cyberguard_test` database. The PostgreSQL lifecycle and HTTP tests
-passed against `cyberguard_test`, including concurrent temporary-credential
-redemption, activation, password changes, session revocation, EML/MSG/pasted
-analysis, history, dashboard aggregates, report export, demo separation, and
-two-user ownership checks. Integration tests explicitly reject any database
-other than `cyberguard_test`. No paid OpenAI test ran.
-
-The original complete MVP is not yet finished. Outstanding: database integration
-and broader security tests; repository/service extraction from analysis handlers;
-configurable processing limits;
-broader labeled-corpus evaluation;
-broader hostile-parser testing; frontend end-to-end verification. Docker stays deferred.
-
-
-Retention: RETENTION_DAYS=0 disables automatic deletion; positive values enable
-hourly cleanup of older reports. SESSION_IDLE_TIMEOUT and SESSION_ABSOLUTE_TIMEOUT
-configure session expiry. PostgreSQL cleanup execution remains unverified.
-
-Current validation: PostgreSQL service is running and pg_isready succeeds. Administrator
-authentication is pending local secure entry. See local-windows.md for exact setup
-and startup commands. The HTTP integration suite was executed against PostgreSQL
-and passed. `go build ./...`, `go test ./...`, and `go vet ./...` passed. The race
-suite is the remaining validation blocker because this Windows environment has no
-GCC toolchain. OpenAPI validation is automated and passing. No paid OpenAI call or
-Docker operation was performed.
+See [checkpoint](rework-checkpoint.md) for exact validation and remaining work.

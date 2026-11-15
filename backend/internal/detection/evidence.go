@@ -37,7 +37,6 @@ func PrepareEvidence(r *Report) {
 	r.Level = "low"
 	r.Version = "3.0.0"
 	r.Manual = true
-	r.MITRE = nil
 	r.AttackTypes = []string{}
 	r.Evidence = []Evidence{}
 	r.Authentication = []Authentication{}

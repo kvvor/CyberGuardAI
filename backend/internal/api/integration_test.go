@@ -149,7 +149,7 @@ func TestPostgresHTTPWorkflow(t *testing.T) {
 	if aggregate["total_analyses"] != float64(1) {
 		t.Fatalf("unexpected total %v", aggregate["total_analyses"])
 	}
-	request(a, "POST", "/analyses", csrf, map[string]string{"source_type": "demo", "demo_sample_id": "credentials"}, 201)
+	request(a, "POST", "/analyses", csrf, map[string]string{"source_type": "demo", "demo_sample_id": "credentials"}, 400)
 	stats = request(a, "GET", "/dashboard/stats?period=all", "", nil, 200)
 	json.Unmarshal(stats, &aggregate)
 	if aggregate["total_analyses"] != float64(1) {

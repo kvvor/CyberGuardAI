@@ -1,4 +1,4 @@
-﻿import {describe,it,expect,vi} from "vitest";
+import {describe,it,expect,vi} from "vitest";
 import {render,screen,fireEvent,waitFor} from "@testing-library/react";
 import {MemoryRouter} from "react-router-dom";
 import "../i18n";
@@ -16,5 +16,5 @@ describe("interface",()=>{
  it.each(["eml","msg"])("accepts %s files",async ext=>{vi.spyOn(window,"fetch").mockImplementation(url=>Promise.resolve(new Response(JSON.stringify(url.includes("samples")?[]:{max_email_size:10485760}))));wrap(<Analyzer/>);const file=new File(["sample"],`sample.${ext}`);fireEvent.change(screen.getByLabelText("Upload email"),{target:{files:[file]}});expect(await screen.findByText(new RegExp(`sample.${ext}`))).toBeInTheDocument();});
  it("rejects unsupported files",()=>{vi.spyOn(window,"fetch").mockResolvedValue(new Response("[]"));wrap(<Analyzer/>);fireEvent.change(screen.getByLabelText("Upload email"),{target:{files:[new File(["x"],"unsafe.exe")]}});expect(screen.getByRole("alert")).toHaveTextContent("Choose an EML or MSG");});
  it("submits pasted text with external consent false by default",async()=>{const fetch=vi.spyOn(window,"fetch").mockImplementation((url,options)=>Promise.resolve(new Response(JSON.stringify(options.method==="POST"?{id:"abc"}:url.includes("samples")?[]:{max_email_size:10485760}))));wrap(<Analyzer/>);fireEvent.click(screen.getByRole("button",{name:"Paste email"}));fireEvent.change(screen.getByLabelText("Email content"),{target:{value:"Investigate this message"}});fireEvent.click(screen.getByRole("button",{name:"Analyze Email"}));await waitFor(()=>expect(fetch.mock.calls.some(([,options])=>options.method==="POST")).toBe(true));const body=JSON.parse(fetch.mock.calls.find(([,options])=>options.method==="POST")[1].body);expect(body.external_processing_consent).toBe(false);expect(body.source_type).toBe("paste");});
- it("labels demo as synthetic and predefined",async()=>{vi.spyOn(window,"fetch").mockImplementation(url=>Promise.resolve(new Response(JSON.stringify(url.includes("samples")?[{id:"credentials",name:"Credential phishing",synthetic:true}]:{}))));wrap(<Analyzer/>);fireEvent.click(screen.getByRole("button",{name:"Synthetic demo"}));expect(await screen.findByText(/Predefined synthetic explanation/)).toBeInTheDocument();});
+ it("only offers upload and paste",()=>{vi.spyOn(window,"fetch").mockResolvedValue(new Response("{}"));wrap(<Analyzer/>);expect(screen.queryByRole("button",{name:"Synthetic demo"})).not.toBeInTheDocument();});
 });
