@@ -8,6 +8,67 @@ servers:
 security:
   - session: []
 paths:
+  /settings/virustotal:
+    get:
+      description: Current user's VirusTotal metadata only. Credentials are never returned.
+      responses:
+        '200':
+          description: Provider metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  provider: {type: string, enum: [virustotal]}
+                  model: {type: string}
+                  enabled: {type: boolean}
+                  has_credential: {type: boolean}
+                  connection_status: {type: string}
+                  last_success_at: {type: string, format: date-time, nullable: true}
+                  source: {type: string}
+    post:
+      description: Save encrypted VirusTotal key. Empty key preserves saved credentials. Enablement does not replace per-analysis hash sharing consent.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, enabled]
+              properties:
+                provider: {type: string, enum: [virustotal]}
+                model: {type: string}
+                enabled: {type: boolean}
+                api_key: {type: string, format: password, writeOnly: true, maxLength: 4096}
+      responses:
+        '200': {description: 'Saved provider metadata, without credential'}
+        '400': {$ref: '#/components/responses/Error'}
+    delete:
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '204': {description: Credential removed and lookups disabled}
+  /settings/virustotal/test:
+    post:
+      description: Explicit lookup of the public empty-file SHA-256. Consumes one quota unit. Sends no email data. Does not upload anything. Success means lookup access (200 or 404), not file safety.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      responses:
+        '200':
+          description: Test outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: {type: boolean}
+                  failure_code: {type: string}
+                  test_type: {type: string, enum: [public_hash_lookup]}
+                  inference_performed: {type: boolean, enum: [false]}
+        '400': {$ref: '#/components/responses/Error'}
   /settings/ai-provider:
     get:
       description: Current user's provider metadata only; API keys are never returned
@@ -143,6 +204,7 @@ paths:
                 subject: {type: string}
                 demo_sample_id: {type: string}
                 external_processing_consent: {type: boolean, default: false}
+                virustotal_consent: {type: boolean, default: false, description: Separate consent to transmit attachment SHA-256 hashes}
                 ai_requested: {type: boolean, description: Defaults to consent for backward compatibility; true requires explicit consent before external processing}
           multipart/form-data:
             schema:
@@ -151,6 +213,7 @@ paths:
               properties:
                 file: {type: string, format: binary, description: EML or MSG up to 10 MiB}
                 external_processing_consent: {type: boolean, default: false}
+                virustotal_consent: {type: boolean, default: false, description: Separate consent to transmit attachment SHA-256 hashes}
                 ai_requested: {type: boolean, description: Literal true requests AI; consent also requests AI for existing clients}
       responses:
         '201': {$ref: '#/components/responses/Analysis'}

@@ -19,3 +19,9 @@ PostgreSQL integration tests require an isolated migrated `TEST_DATABASE_URL`.
 - [Architecture](docs/backend-architecture.md)
 - [Security and residual risks](docs/security.md)
 - [Detection evaluation procedure](docs/evaluation.md)
+# Full-stack rework status
+
+Work in progress on `feature/full-rework`. See [checkpoint](docs/rework-checkpoint.md)
+for verified changes and remaining requirements. [VirusTotal integration](docs/virustotal.md)
+adds migration 000003, encrypted per-user settings and separately authorized
+attachment hash lookups. Apply all migrations before starting the updated backend.

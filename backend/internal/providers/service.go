@@ -31,11 +31,30 @@ type Config struct {
 	Revision      string     `json:"-"`
 }
 type Service struct {
-	ClientFactory func(string,string)*ai.Client
+	// Provider defaults to openai for backwards compatibility with existing callers.
+	Provider                   string
+	ClientFactory              func(string, string) *ai.Client
 	DB                         *pgxpool.Pool
 	Master                     []byte
 	FallbackKey, FallbackModel string
 	FallbackEnabled            bool
+}
+
+func (s *Service) name() string {
+	if s.Provider == "" {
+		return "openai"
+	}
+	return s.Provider
+}
+
+// For returns a copy sharing persistence and encryption, scoped to one provider.
+func (s *Service) For(provider string) *Service {
+	c := *s
+	c.Provider = provider
+	if provider != "openai" {
+		c.FallbackEnabled = false
+	}
+	return &c
 }
 
 func FromEnv(db *pgxpool.Pool) *Service {
@@ -61,7 +80,7 @@ func (s *Service) Seal(owner, key string) ([]byte, error) {
 	if _, e = rand.Read(nonce); e != nil {
 		return nil, e
 	}
-	return a.Seal(nonce, nonce, []byte(key), []byte("provider:v1:openai:"+owner)), nil
+	return a.Seal(nonce, nonce, []byte(key), []byte("provider:v1:"+s.name()+":"+owner)), nil
 }
 func (s *Service) Open(owner string, b []byte) (string, error) {
 	a, e := s.crypt()
@@ -71,16 +90,16 @@ func (s *Service) Open(owner string, b []byte) (string, error) {
 	if len(b) < a.NonceSize() {
 		return "", errors.New("PROVIDER_CREDENTIAL_INVALID")
 	}
-	p, e := a.Open(nil, b[:a.NonceSize()], b[a.NonceSize():], []byte("provider:v1:openai:"+owner))
+	p, e := a.Open(nil, b[:a.NonceSize()], b[a.NonceSize():], []byte("provider:v1:"+s.name()+":"+owner))
 	if e != nil {
 		return "", errors.New("PROVIDER_CREDENTIAL_INVALID")
 	}
 	return string(p), nil
 }
 func (s *Service) Read(ctx context.Context, owner string) (Config, []byte, error) {
-	c := Config{Provider: "openai", Status: "not_configured", Source: "user"}
+	c := Config{Provider: s.name(), Status: "not_configured", Source: "user"}
 	var secret []byte
-	e := s.DB.QueryRow(ctx, `SELECT provider,model,enabled,credential,connection_status,last_success_at,revision FROM provider_settings WHERE user_id=$1`, owner).Scan(&c.Provider, &c.Model, &c.Enabled, &secret, &c.Status, &c.LastSuccess, &c.Revision)
+	e := s.DB.QueryRow(ctx, `SELECT provider,model,enabled,credential,connection_status,last_success_at,revision FROM provider_settings WHERE user_id=$1 AND provider=$2`, owner, s.name()).Scan(&c.Provider, &c.Model, &c.Enabled, &secret, &c.Status, &c.LastSuccess, &c.Revision)
 	if errors.Is(e, pgx.ErrNoRows) {
 		if s.FallbackEnabled && s.FallbackKey != "" && s.FallbackModel != "" {
 			c.Model = s.FallbackModel
@@ -98,10 +117,10 @@ func (s *Service) Read(ctx context.Context, owner string) (Config, []byte, error
 var modelPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$`)
 
 func (s *Service) Save(ctx context.Context, owner, provider, model, key string, enabled bool) error {
-	if provider != "openai" {
+	if provider != s.name() || (provider != "openai" && provider != "virustotal") {
 		return errors.New("PROVIDER_UNSUPPORTED")
 	}
-	if !modelPattern.MatchString(model) || len(key) > 4096 {
+	if (provider == "openai" && !modelPattern.MatchString(model)) || len(key) > 4096 {
 		return errors.New("INVALID_PROVIDER_SETTINGS")
 	}
 	var encrypted []byte
@@ -112,11 +131,11 @@ func (s *Service) Save(ctx context.Context, owner, provider, model, key string, 
 			return e
 		}
 	}
-	_, e = s.DB.Exec(ctx, `INSERT INTO provider_settings(user_id,provider,model,credential,enabled,revision) VALUES($1,'openai',$2,$3,$4,$5) ON CONFLICT(user_id) DO UPDATE SET model=excluded.model,credential=COALESCE(excluded.credential,provider_settings.credential),enabled=excluded.enabled,revision=excluded.revision,connection_status='untested',last_success_at=NULL,updated_at=now()`, owner, model, encrypted, enabled, uuid.NewString())
+	_, e = s.DB.Exec(ctx, `INSERT INTO provider_settings(user_id,provider,model,credential,enabled,revision) VALUES($1,$6,$2,$3,$4,$5) ON CONFLICT(user_id,provider) DO UPDATE SET model=excluded.model,credential=COALESCE(excluded.credential,provider_settings.credential),enabled=excluded.enabled,revision=excluded.revision,connection_status='untested',last_success_at=NULL,updated_at=now()`, owner, model, encrypted, enabled, uuid.NewString(), provider)
 	return e
 }
 func (s *Service) Remove(ctx context.Context, owner string) error {
-	_, e := s.DB.Exec(ctx, `INSERT INTO provider_settings(user_id,provider,model,enabled,revision) VALUES($1,'openai','',false,$2) ON CONFLICT(user_id) DO UPDATE SET credential=NULL,enabled=false,connection_status='not_configured',last_success_at=NULL,revision=excluded.revision,updated_at=now()`, owner, uuid.NewString())
+	_, e := s.DB.Exec(ctx, `INSERT INTO provider_settings(user_id,provider,model,enabled,revision,connection_status) VALUES($1,$3,'',false,$2,'not_configured') ON CONFLICT(user_id,provider) DO UPDATE SET credential=NULL,enabled=false,connection_status='not_configured',last_success_at=NULL,revision=excluded.revision,updated_at=now()`, owner, uuid.NewString(), s.name())
 	return e
 }
 func (s *Service) Resolve(ctx context.Context, owner string) (Config, *ai.Client, error) {
@@ -134,7 +153,9 @@ func (s *Service) Resolve(ctx context.Context, owner string) (Config, *ai.Client
 			return c, nil, e
 		}
 	}
-	if s.ClientFactory!=nil{return c,s.ClientFactory(key,c.Model),nil}
+	if s.ClientFactory != nil {
+		return c, s.ClientFactory(key, c.Model), nil
+	}
 	return c, &ai.Client{Key: key, Model: c.Model}, nil
 }
 func (s *Service) Tested(ctx context.Context, owner string, c Config, code string) error {
@@ -146,6 +167,18 @@ func (s *Service) Tested(ctx context.Context, owner string, c Config, code strin
 		now := time.Now().UTC()
 		success = &now
 	}
-	_, e := s.DB.Exec(ctx, `UPDATE provider_settings SET connection_status=$3,last_success_at=COALESCE($4,last_success_at) WHERE user_id=$1 AND revision=$2`, owner, c.Revision, status, success)
+	_, e := s.DB.Exec(ctx, `UPDATE provider_settings SET connection_status=$3,last_success_at=COALESCE($4,last_success_at) WHERE user_id=$1 AND revision=$2 AND provider=$5`, owner, c.Revision, status, success, s.name())
 	return e
+}
+
+// ReserveLookup enforces conservative per-user VT quotas across server processes.
+// Replacement or deletion of a credential never resets the quota counters.
+func (s *Service) ReserveLookup(ctx context.Context, owner string) (bool, error) {
+	tag, err := s.DB.Exec(ctx, `UPDATE provider_settings SET next_lookup_at=now()+interval '15 seconds',
+ lookup_count=CASE WHEN lookup_day=(now() AT TIME ZONE 'UTC')::date THEN lookup_count+1 ELSE 1 END,
+ lookup_day=(now() AT TIME ZONE 'UTC')::date
+ WHERE user_id=$1 AND provider='virustotal' AND credential IS NOT NULL
+ AND (next_lookup_at IS NULL OR next_lookup_at<=now())
+ AND (lookup_day IS DISTINCT FROM (now() AT TIME ZONE 'UTC')::date OR lookup_count<500)`, owner)
+	return tag.RowsAffected() == 1, err
 }

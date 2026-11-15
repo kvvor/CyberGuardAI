@@ -50,6 +50,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var e emailparser.Email
 	var err error
 	consent := false
+	vtConsent := false
 	requested := false
 	demoID := ""
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
@@ -59,6 +60,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		}
 		defer r.MultipartForm.RemoveAll()
 		consent = r.FormValue("external_processing_consent") == "true"
+		vtConsent = r.FormValue("virustotal_consent") == "true"
 		requested = r.FormValue("ai_requested") == "true" || consent
 		f, h, x := r.FormFile("file")
 		if x != nil {
@@ -87,6 +89,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			Sender      string `json:"sender"`
 			Subject     string `json:"subject"`
 			Consent     bool   `json:"external_processing_consent"`
+			VTConsent   bool   `json:"virustotal_consent"`
 			AIRequested *bool  `json:"ai_requested"`
 			DemoID      string `json:"demo_sample_id"`
 		}
@@ -102,6 +105,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		}
 		e, err = emailparser.Parse([]byte(in.Text), "", "paste", in.Sender, in.Subject)
 		consent = in.Consent
+		vtConsent = in.VTConsent
 		requested = consent
 		if in.AIRequested != nil {
 			requested = *in.AIRequested
@@ -132,6 +136,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	execution := AIExecution{Status: "not_requested", StaticVerdict: report.Verdict, StaticScore: report.Score, Final: report.Verdict, Influence: "STATIC_ONLY"}
 	if mode != "demo" {
+		report.AttachmentReputation, report.VirusTotalStatus = s.executeVirusTotal(r.Context(), owner(r), vtConsent, report.Email.Attachments)
 		execution, assessment = s.executeAI(r.Context(), owner(r), requested, consent, &report)
 		report.AIStatus = execution.Status
 		if execution.Failure != "" {
@@ -392,6 +397,19 @@ func pdfReport(row stored, lang string) ([]byte, error) {
 	line(label("attachments"))
 	for _, a := range row.Report.Email.Attachments {
 		line(fmt.Sprintf("%s (%d bytes) %s / %s SHA-256: %s", a.Filename, a.Size, a.Declared, a.Detected, a.SHA256))
+		for _, reputation := range row.Report.AttachmentReputation {
+			if reputation.SHA256 != a.SHA256 {
+				continue
+			}
+			line("VirusTotal: " + reputation.Status)
+			if reputation.Statistics != nil {
+				line(fmt.Sprintf("malicious: %d; suspicious: %d; undetected: %d", reputation.Statistics["malicious"], reputation.Statistics["suspicious"], reputation.Statistics["undetected"]))
+			}
+			if reputation.LastAnalysis != nil {
+				line(reputation.LastAnalysis.Format(time.RFC3339))
+			}
+			break
+		}
 	}
 	line(label("mitre"))
 	for _, m := range row.Report.MITRE {

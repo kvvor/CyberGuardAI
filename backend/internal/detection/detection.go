@@ -2,6 +2,7 @@ package detection
 
 import (
 	"cyberguard.local/backend/internal/emailparser"
+	"cyberguard.local/backend/internal/virustotal"
 	"fmt"
 	"golang.org/x/net/html"
 	"net"
@@ -43,18 +44,20 @@ type Mapping struct {
 	URL      string   `json:"official_url"`
 }
 type Report struct {
-	Verdict     string            `json:"verdict"`
-	Score       int               `json:"risk_score"`
-	Level       string            `json:"risk_level"`
-	Version     string            `json:"scoring_version"`
-	AttackTypes []string          `json:"attack_types"`
-	Indicators  []Finding         `json:"indicators"`
-	IOCs        []IOC             `json:"iocs"`
-	MITRE       []Mapping         `json:"mitre_mappings"`
-	Limitations []string          `json:"limitations"`
-	Manual      bool              `json:"manual_review_required"`
-	Email       emailparser.Email `json:"email"`
-	AIStatus    string            `json:"ai_status"`
+	AttachmentReputation []virustotal.Result `json:"attachment_reputation,omitempty"`
+	VirusTotalStatus     string              `json:"virustotal_status,omitempty"`
+	Verdict              string              `json:"verdict"`
+	Score                int                 `json:"risk_score"`
+	Level                string              `json:"risk_level"`
+	Version              string              `json:"scoring_version"`
+	AttackTypes          []string            `json:"attack_types"`
+	Indicators           []Finding           `json:"indicators"`
+	IOCs                 []IOC               `json:"iocs"`
+	MITRE                []Mapping           `json:"mitre_mappings"`
+	Limitations          []string            `json:"limitations"`
+	Manual               bool                `json:"manual_review_required"`
+	Email                emailparser.Email   `json:"email"`
+	AIStatus             string              `json:"ai_status"`
 }
 
 var urls = regexp.MustCompile(`(?i)https?://[^\s<>"']+`)

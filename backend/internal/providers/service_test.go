@@ -25,6 +25,9 @@ func TestEncryption(t *testing.T) {
 	if e != nil || p != "synthetic-key" {
 		t.Fatal(e)
 	}
+	if _, e := s.For("virustotal").Open("alice", b); e == nil {
+		t.Fatal("cross-provider decrypt")
+	}
 	b[len(b)-1] ^= 1
 	if _, e = s.Open("alice", b); e == nil {
 		t.Fatal("tamper accepted")
@@ -63,6 +66,39 @@ func TestSettingsPostgres(t *testing.T) {
 	if e != nil || client.Key != "synthetic-key" {
 		t.Fatal(e)
 	}
+	vt := s.For("virustotal")
+	if err := vt.Save(ctx, id, "virustotal", "", "vt-synthetic", true); err != nil {
+		t.Fatal(err)
+	}
+	vc, vb, err := vt.Read(ctx, id)
+	if err != nil || !vc.HasCredential || vc.Provider != "virustotal" {
+		t.Fatal(vc, err)
+	}
+	if key, err := vt.Open(id, vb); err != nil || key != "vt-synthetic" {
+		t.Fatal("VT decrypt failed")
+	}
+	if _, err := s.Open(id, vb); err == nil {
+		t.Fatal("provider substitution accepted")
+	}
+	if ok, err := vt.ReserveLookup(ctx, id); err != nil || !ok {
+		t.Fatal("first reservation", err)
+	}
+	if ok, err := vt.ReserveLookup(ctx, id); err != nil || ok {
+		t.Fatal("quota bypass", err)
+	}
+	if err := vt.Save(ctx, id, "virustotal", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	vc, vb, err = vt.Read(ctx, id)
+	if err != nil || vc.Enabled || !vc.HasCredential {
+		t.Fatal("disable lost key", err)
+	}
+	if key, err := vt.Open(id, vb); err != nil || key != "vt-synthetic" {
+		t.Fatal("empty save lost key")
+	}
+	if other, _, err := vt.Read(ctx, uuid.NewString()); err != nil || other.HasCredential {
+		t.Fatal("VT user isolation", err)
+	}
 	other, _, e := s.Read(ctx, uuid.NewString())
 	if e != nil || other.Source != "operator" || other.Model == c.Model {
 		t.Fatal("isolation")
@@ -72,5 +108,14 @@ func TestSettingsPostgres(t *testing.T) {
 	}
 	if _, _, e = s.Resolve(ctx, id); e == nil {
 		t.Fatal("removed credential fell back to operator")
+	}
+	if vc, _, err := vt.Read(ctx, id); err != nil || !vc.HasCredential {
+		t.Fatal("OpenAI delete affected VT")
+	}
+	if err := vt.Remove(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if vc, _, err := vt.Read(ctx, id); err != nil || vc.HasCredential || vc.Enabled {
+		t.Fatal("VT delete failed")
 	}
 }
