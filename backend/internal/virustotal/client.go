@@ -164,12 +164,14 @@ func (c *Client) LookupMany(ctx context.Context, hashes []string, reserve func()
 			r.Status = "provider_error"
 		} else if blocked == "" {
 			if reserve != nil && !reserve() {
-				r.Status = "rate_limited"
+				// Not sent: the local per-minute/per-day allowance is used up.
+				// Distinct from a provider 429 so the UI can offer a later re-check.
+				r.Status = "deferred_local_limit"
 			} else {
 				r = c.Lookup(ctx, hash)
 			}
 		}
-		if r.Status == "rate_limited" || r.Status == "authentication_failed" || r.Status == "access_forbidden" {
+		if r.Status == "rate_limited" || r.Status == "deferred_local_limit" || r.Status == "authentication_failed" || r.Status == "access_forbidden" {
 			blocked = r.Status
 		}
 		seen[hash] = r

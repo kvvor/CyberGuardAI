@@ -3,10 +3,12 @@ package detection
 import (
 	"encoding/json"
 	"fmt"
-	"golang.org/x/net/html"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"cyberguard.local/backend/internal/virustotal"
+	"golang.org/x/net/html"
 )
 
 type Evidence struct {
@@ -15,6 +17,10 @@ type Evidence struct {
 	Value  string `json:"value"`
 	Trust  string `json:"trust_status"`
 }
+
+// Authentication describes one reported email authentication result. CyberGuard
+// receives a file after delivery, so it cannot reproduce SPF (needs the SMTP
+// client address) and does not perform DKIM cryptographic verification.
 type Authentication struct {
 	ID           string   `json:"evidence_id"`
 	Mechanism    string   `json:"mechanism"`
@@ -27,123 +33,248 @@ type Authentication struct {
 	Limitations  []string `json:"limitations"`
 }
 
-var authResult = regexp.MustCompile(`(?i)^\s*(spf|dkim|dmarc)\s*=\s*([a-z]+)\b`)
+// TrustedAuthServers lists authserv-id values (RFC 8601) of the operator's own
+// receiving mail servers. Only the topmost Authentication-Results header added
+// by such a server is labelled trusted_reported. Empty by default: without a
+// trust anchor every reported result is untrusted.
+var TrustedAuthServers []string
 
-// PrepareEvidence upgrades the existing extraction result for the live model
-// pipeline. Legacy weights never enter the model input or become a live verdict.
+var authResult = regexp.MustCompile(`(?i)^\s*(spf|dkim|dmarc)\s*=\s*([a-z]+)\b(.*)$`)
+var authProperty = regexp.MustCompile(`(?i)\b(header\.from|header\.d|header\.i|smtp\.mailfrom|smtp\.helo)\s*=\s*([^\s;()]+)`)
+var receivedSPF = regexp.MustCompile(`(?i)^\s*(pass|fail|softfail|neutral|none|temperror|permerror)\b`)
+var dkimTag = regexp.MustCompile(`(?i)(?:^|;)\s*([ads])\s*=\s*([^;\s]+)`)
+
+func cut(s string, n int) (string, bool) {
+	if len(s) <= n {
+		return s, false
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n], true
+}
+
+func note(r *Report, code string) {
+	for _, l := range r.Limitations {
+		if l == code {
+			return
+		}
+	}
+	r.Limitations = append(r.Limitations, code)
+}
+
+// htmlText extracts readable text; scripts, styles and markup are dropped and
+// no resource is ever fetched.
+func htmlText(source string, limit int) string {
+	doc, _ := html.Parse(strings.NewReader(source))
+	if doc == nil {
+		return ""
+	}
+	var out strings.Builder
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if out.Len() > limit*2 {
+			return
+		}
+		if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style" || n.Data == "head" || n.Data == "noscript" || n.Data == "template") {
+			return
+		}
+		if n.Type == html.TextNode {
+			out.WriteString(n.Data)
+			out.WriteByte(' ')
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	return strings.Join(strings.Fields(out.String()), " ")
+}
+
+// PrepareEvidence turns the extraction result into the bounded, identified
+// evidence set that is stored, shown and sent to the assessment model.
 func PrepareEvidence(r *Report) {
 	r.Score = 0
 	r.Verdict = "inconclusive"
 	r.Level = "low"
-	r.Version = "3.0.0"
+	r.Version = EvidenceVersion
 	r.Manual = true
 	r.AttackTypes = []string{}
 	r.Evidence = []Evidence{}
 	r.Authentication = []Authentication{}
-	r.Limitations = append([]string{"AUTHENTICATION_HEADERS_UNVERIFIED", "NO_INDEPENDENT_DKIM_VERIFICATION"}, r.Email.Warnings...)
+	limitations := append([]string{}, r.Limitations...)
+	r.Limitations = []string{"AUTHENTICATION_NOT_INDEPENDENTLY_VERIFIED"}
+	for _, l := range append(limitations, r.Email.Warnings...) {
+		note(r, l)
+	}
 	trim := func(s string, n int) string {
-		if len(s) <= n {
-			return s
+		s, shortened := cut(s, n)
+		if shortened {
+			note(r, "MODEL_INPUT_TRUNCATED")
 		}
-		r.Limitations = append(r.Limitations, "MODEL_INPUT_TRUNCATED")
-		for !utf8.RuneStart(s[n]) {
-			n--
-		}
-		return s[:n]
+		return s
 	}
 	r.Email.Text = trim(r.Email.Text, 24000)
-	// Extract text without scripts/styles; no resource is ever fetched.
 	if r.Email.HTML != "" {
-		doc, _ := html.Parse(strings.NewReader(r.Email.HTML))
-		var out strings.Builder
-		var walk func(*html.Node)
-		walk = func(n *html.Node) {
-			if out.Len() > 24000 {
-				return
-			}
-			if n.Type == html.ElementNode && (n.Data == "script" || n.Data == "style") {
-				return
-			}
-			if n.Type == html.TextNode {
-				out.WriteString(n.Data)
-				out.WriteByte(' ')
-			}
-			for c := n.FirstChild; c != nil; c = c.NextSibling {
-				walk(c)
-			}
-		}
-		if doc != nil {
-			walk(doc)
-		}
-		r.Email.HTML = trim(strings.Join(strings.Fields(out.String()), " "), 24000)
+		r.Email.HTML = trim(htmlText(r.Email.HTML, 24000), 24000)
 	}
 	add := func(id, source, value, trust string) {
-		if value != "" {
-			r.Evidence = append(r.Evidence, Evidence{id, source, trim(value, 4096), trust})
+		if strings.TrimSpace(value) != "" && len(r.Evidence) < 400 {
+			r.Evidence = append(r.Evidence, Evidence{id, source, trim(value, 2048), trust})
 		}
 	}
 	add("subject-1", "subject", r.Email.Subject, "untrusted_content")
 	add("sender-1", "from", r.Email.Sender, "untrusted_header")
 	add("reply-to-1", "reply_to", r.Email.ReplyTo, "untrusted_header")
+	add("message-id-1", "message_id", r.Email.MessageID, "untrusted_header")
+	if r.Email.Timestamp != nil {
+		add("date-1", "date", r.Email.Timestamp.Format("2006-01-02T15:04:05Z07:00"), "untrusted_header")
+	}
 	for _, key := range []string{"Return-Path", "Sender", "Received", "Received-Spf", "Dkim-Signature"} {
 		for i, value := range r.Email.Headers[key] {
-			if i >= 16 {
-				r.Limitations = append(r.Limitations, "HEADER_EVIDENCE_TRUNCATED")
+			if i >= 8 {
+				note(r, "HEADER_EVIDENCE_TRUNCATED")
 				break
+			}
+			value = strings.Join(strings.Fields(value), " ")
+			if key == "Dkim-Signature" {
+				// The signature blob is useless to a reader; keep the identifying tags.
+				tags := []string{}
+				for _, m := range dkimTag.FindAllStringSubmatch(value, 8) {
+					tags = append(tags, strings.ToLower(m[1])+"="+m[2])
+				}
+				value = "signature present, not cryptographically verified: " + strings.Join(tags, "; ")
 			}
 			add(fmt.Sprintf("%s-%d", strings.ToLower(key), i+1), key, value, "untrusted_header")
 		}
 	}
-	for _, mechanism := range []string{"spf", "dkim", "dmarc"} {
-		found := false
-		for i, value := range r.Email.AuthenticationResults {
-			if i >= 16 {
-				break
-			}
-			parts := strings.Split(value, ";")
-			for _, part := range parts[1:] {
-				m := authResult.FindStringSubmatch(part)
-				if len(m) != 3 || strings.ToLower(m[1]) != mechanism {
-					continue
-				}
-				id := fmt.Sprintf("authentication-%s-%d", mechanism, len(r.Authentication)+1)
-				add(id, "Authentication-Results", value, "untrusted_reported")
-				r.Authentication = append(r.Authentication, Authentication{id, mechanism, strings.ToLower(m[2]), trim(strings.TrimSpace(parts[0]), 256), "Authentication-Results", "untrusted_reported", "unable_to_verify", "not independently established", []string{"Uploaded headers may be forged; no trusted receiver is configured."}})
-				found = true
-			}
-		}
-		if !found {
-			r.Authentication = append(r.Authentication, Authentication{Mechanism: mechanism, Result: "unavailable", Source: "missing", Trust: "unavailable", Verification: "unavailable", Alignment: "unavailable", Limitations: []string{"No usable reported result; body text is not authentication evidence."}})
-		}
-	}
-	technical := []Finding{}
-	for _, f := range r.Indicators {
-		switch f.Rule {
-		case "CREDENTIAL_REQUEST", "URGENCY", "ACCOUNT_SUSPENSION", "PAYMENT_REQUEST", "BEC_SECRECY", "BRAND_DOMAIN_MISMATCH", "LOOKALIKE_DOMAIN":
-			continue
-		}
-		f.Severity = "low"
-		f.Status = "observed_not_a_verdict"
-		technical = append(technical, f)
-		add(f.ID, f.Source, f.Evidence, "deterministic_observation")
-	}
-	r.Indicators = technical
-	for i, ioc := range r.IOCs {
-		if ioc.Category == "embedded_resource" || ioc.Category == "tracking_url" {
-			continue
-		}
-		if i >= 64 {
-			r.Limitations = append(r.Limitations, "MODEL_IOCS_TRUNCATED")
+
+	// Reported authentication results.
+	found := map[string]bool{}
+	for i, value := range r.Email.AuthenticationResults {
+		if i >= 8 {
+			note(r, "HEADER_EVIDENCE_TRUNCATED")
 			break
 		}
-		add(fmt.Sprintf("ioc-%d", i+1), ioc.Source, ioc.Normalized, "extracted_observable")
+		value = strings.Join(strings.Fields(value), " ")
+		parts := strings.Split(value, ";")
+		server := ""
+		if fields := strings.Fields(parts[0]); len(fields) > 0 {
+			server = strings.ToLower(fields[0])
+		}
+		trust := "untrusted_reported"
+		limitation := "UPLOADED_HEADERS_CAN_BE_FORGED"
+		if i == 0 {
+			for _, trusted := range TrustedAuthServers {
+				if trusted != "" && strings.EqualFold(strings.TrimSpace(trusted), server) {
+					trust = "trusted_reported"
+					limitation = "REPORTED_BY_CONFIGURED_RECEIVER_NOT_REVERIFIED"
+				}
+			}
+		}
+		for _, part := range parts[1:] {
+			m := authResult.FindStringSubmatch(part)
+			if len(m) != 4 || len(r.Authentication) >= 24 {
+				continue
+			}
+			mechanism := strings.ToLower(m[1])
+			properties := []string{}
+			for _, p := range authProperty.FindAllStringSubmatch(m[3], 6) {
+				properties = append(properties, strings.ToLower(p[1])+"="+p[2])
+			}
+			alignment := "not_reported"
+			if len(properties) > 0 {
+				alignment = "reported: " + strings.Join(properties, "; ")
+			}
+			id := fmt.Sprintf("authentication-%s-%d", mechanism, len(r.Authentication)+1)
+			add(id, "Authentication-Results", strings.TrimSpace(parts[0])+"; "+strings.TrimSpace(part), trust)
+			server, _ := cut(server, 256)
+			r.Authentication = append(r.Authentication, Authentication{id, mechanism, strings.ToLower(m[2]), server, "Authentication-Results", trust, "unable_to_verify", alignment, []string{limitation}})
+			found[mechanism] = true
+		}
+	}
+	if !found["spf"] {
+		for _, value := range r.Email.Headers["Received-Spf"] {
+			if m := receivedSPF.FindStringSubmatch(value); m != nil {
+				id := fmt.Sprintf("authentication-spf-%d", len(r.Authentication)+1)
+				add(id, "Received-SPF", strings.Join(strings.Fields(value), " "), "untrusted_reported")
+				r.Authentication = append(r.Authentication, Authentication{id, "spf", strings.ToLower(m[1]), "", "Received-SPF", "untrusted_reported", "unable_to_verify", "not_reported", []string{"UPLOADED_HEADERS_CAN_BE_FORGED"}})
+				found["spf"] = true
+			}
+			break
+		}
+	}
+	for _, mechanism := range []string{"spf", "dkim", "dmarc"} {
+		if found[mechanism] {
+			continue
+		}
+		limitation := "NO_REPORTED_RESULT"
+		source := "missing"
+		if mechanism == "dkim" && len(r.Email.Headers["Dkim-Signature"]) > 0 {
+			limitation, source = "DKIM_SIGNATURE_PRESENT_NOT_VERIFIED", "DKIM-Signature"
+		}
+		r.Authentication = append(r.Authentication, Authentication{Mechanism: mechanism, Result: "unavailable", Source: source, Trust: "unavailable", Verification: "unavailable", Alignment: "unavailable", Limitations: []string{limitation}})
+	}
+
+	for _, f := range r.Indicators {
+		add(f.ID, "observation:"+f.Rule, f.Evidence, "deterministic_observation")
+	}
+	for i, l := range r.Links {
+		if i >= 40 {
+			note(r, "MODEL_LINKS_TRUNCATED")
+			break
+		}
+		b, _ := json.Marshal(l)
+		add(fmt.Sprintf("link-%d", i+1), "hyperlink", string(b), "extracted_observable")
+	}
+	sent, resources := 0, map[string]int{}
+	for _, ioc := range r.IOCs {
+		if !Actionable(ioc.Category) {
+			resources[ioc.Category]++
+			continue
+		}
+		if ioc.Type == "url" && ioc.Category != "script_resource" {
+			continue // already present as link-N with its visible text
+		}
+		if sent >= 64 {
+			note(r, "MODEL_IOCS_TRUNCATED")
+			break
+		}
+		sent++
+		add(fmt.Sprintf("ioc-%d", sent), ioc.Type+":"+ioc.Category, ioc.Normalized, "extracted_observable")
+	}
+	if len(resources) > 0 {
+		// Page furniture is summarised, not listed: it is rarely decisive and
+		// previously drowned the actionable indicators.
+		b, _ := json.Marshal(resources)
+		add("resources-1", "embedded_resource_counts", string(b), "deterministic_observation")
 	}
 	for i, a := range r.Email.Attachments {
 		b, _ := json.Marshal(a)
 		add(fmt.Sprintf("attachment-%d", i+1), "attachment_metadata", string(b), "deterministic_observation")
 	}
 	for i, v := range r.AttachmentReputation {
-		b, _ := json.Marshal(v)
-		add(fmt.Sprintf("reputation-%d", i+1), "virustotal", string(b), "provider_reported")
+		add(fmt.Sprintf("reputation-%d", i+1), "virustotal", ReputationValue(v), "provider_reported")
 	}
+}
+
+// ReputationValue is the evidence text for one VirusTotal result. Engine names
+// stay in the stored report; counts and a few labels are enough as evidence.
+func ReputationValue(v virustotal.Result) string {
+	summary := map[string]any{"sha256": v.SHA256, "status": v.Status, "source": v.Source}
+	if v.Statistics != nil {
+		summary["statistics"] = v.Statistics
+	}
+	if v.LastAnalysis != nil {
+		summary["last_analysis_at"] = v.LastAnalysis
+	}
+	if len(v.Engines) > 0 {
+		n := len(v.Engines)
+		if n > 5 {
+			n = 5
+		}
+		summary["sample_detections"] = v.Engines[:n]
+	}
+	b, _ := json.Marshal(summary)
+	return string(b)
 }

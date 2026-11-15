@@ -46,12 +46,16 @@ func TestOrigin(t *testing.T) {
 func TestRateLimit(t *testing.T) {
 	s := &Server{}
 	for i := 0; i < 10; i++ {
-		if !s.allowed("127.0.0.1:123") {
+		if !s.allowed("auth", "127.0.0.1:123", 10) {
 			t.Fatal(i)
 		}
 	}
-	if s.allowed("127.0.0.1:123") {
+	if s.allowed("auth", "127.0.0.1:123", 10) {
 		t.Fatal("limit bypass")
+	}
+	// Provider operations use their own bucket and cannot lock out sign-in.
+	if !s.allowed("provider", "127.0.0.1:123", 30) {
+		t.Fatal("scopes are not independent")
 	}
 }
 func TestPDF(t *testing.T) {

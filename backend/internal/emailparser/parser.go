@@ -78,7 +78,10 @@ func Parse(data []byte, filename, source, sender, subject string) (Email, error)
 	v.Sender = decode(m.Header.Get("From"))
 	v.ReplyTo = decode(m.Header.Get("Reply-To"))
 	v.MessageID = m.Header.Get("Message-ID")
-	v.Recipients = append(m.Header["To"], m.Header["Cc"]...)
+	v.Recipients = []string{}
+	for _, value := range append(append([]string{}, m.Header["To"]...), m.Header["Cc"]...) {
+		v.Recipients = append(v.Recipients, decode(value))
+	}
 	v.Headers = map[string][]string(m.Header)
 	v.AuthenticationResults = m.Header["Authentication-Results"]
 	v.AvailableEvidence = []string{"headers", "body"}
@@ -163,7 +166,14 @@ func part(v *Email, h textproto.MIMEHeader, r io.Reader, depth int, budget *int)
 		if len(v.Attachments) >= 32 {
 			return fmt.Errorf("ATTACHMENT_LIMIT")
 		}
+		// RFC 2047 encoded-word file names are common in real mail.
+		if decoded, err := (&mime.WordDecoder{CharsetReader: func(c string, r io.Reader) (io.Reader, error) { return charset.NewReaderLabel(c, r) }}).DecodeHeader(name); err == nil {
+			name = decoded
+		}
 		name = strings.ReplaceAll(name, "\\", "/")
+		if len(name) > 255 {
+			name = strings.ToValidUTF8(name[:255], "")
+		}
 		v.Attachments = append(v.Attachments, Attachment{Filename: filepath.Base(name), Declared: ct, Detected: http.DetectContentType(b), Size: len(b), SHA256: hash(b)})
 		return nil
 	}

@@ -12,7 +12,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 403, "REGISTRATION_DISABLED")
 		return
 	}
-	if !s.allowed(r.RemoteAddr) {
+	if !s.allowed("register", r.RemoteAddr, 10) {
 		w.Header().Set("Retry-After", "60")
 		fail(w, r, 429, "RATE_LIMITED")
 		return
@@ -36,7 +36,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, auth.ErrRegistrationInput) {
 			fail(w, r, 400, "INVALID_REGISTRATION_INPUT")
 		} else {
-			fail(w, r, 500, "INTERNAL_ERROR")
+			internal(w, r, "register", err)
 		}
 		return
 	}

@@ -80,11 +80,40 @@ func TestSettingsPostgres(t *testing.T) {
 	if _, err := s.Open(id, vb); err == nil {
 		t.Fatal("provider substitution accepted")
 	}
-	if ok, err := vt.ReserveLookup(ctx, id); err != nil || !ok {
-		t.Fatal("first reservation", err)
+	// Sliding per-minute allowance (default 4) persisted in PostgreSQL.
+	for i := 0; i < 4; i++ {
+		if ok, err := vt.ReserveLookup(ctx, id); err != nil || !ok {
+			t.Fatal("reservation within allowance refused", i, err)
+		}
 	}
 	if ok, err := vt.ReserveLookup(ctx, id); err != nil || ok {
-		t.Fatal("quota bypass", err)
+		t.Fatal("per-minute allowance bypassed", err)
+	}
+	// Entries older than a minute no longer count.
+	if _, err := db.Exec(ctx, `UPDATE provider_settings SET lookup_recent=ARRAY[now()-interval '61 seconds',now()-interval '90 seconds',now()-interval '10 seconds']::timestamptz[] WHERE user_id=$1 AND provider='virustotal'`, id); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if ok, err := vt.ReserveLookup(ctx, id); err != nil || !ok {
+			t.Fatal("expired entries still counted", i, err)
+		}
+	}
+	if ok, _ := vt.ReserveLookup(ctx, id); ok {
+		t.Fatal("window not enforced after expiry")
+	}
+	// Replacing the credential must not reset the counters.
+	if err := vt.Save(ctx, id, "virustotal", "", "vt-replacement", true); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := vt.ReserveLookup(ctx, id); ok {
+		t.Fatal("credential replacement reset the allowance")
+	}
+	if err := vt.Save(ctx, id, "virustotal", "", "vt-synthetic", true); err != nil {
+		t.Fatal(err)
+	}
+	// The OpenAI row has no lookup allowance at all.
+	if ok, _ := s.ReserveLookup(ctx, uuid.NewString()); ok {
+		t.Fatal("reservation for unknown user")
 	}
 	if err := vt.Save(ctx, id, "virustotal", "", "", false); err != nil {
 		t.Fatal(err)
@@ -117,5 +146,44 @@ func TestSettingsPostgres(t *testing.T) {
 	}
 	if vc, _, err := vt.Read(ctx, id); err != nil || vc.HasCredential || vc.Enabled {
 		t.Fatal("VT delete failed")
+	}
+}
+
+func TestKeyNormalizationAndLimits(t *testing.T) {
+	if k, e := NormalizeKey("  sk-abc_DEF-123\r\n"); e != nil || k != "sk-abc_DEF-123" {
+		t.Fatal(k, e)
+	}
+	for _, bad := range []string{"sk abc", "sk-\x00abc", "ключ", "a\tb"} {
+		if _, e := NormalizeKey(bad); e == nil || e.Error() != "PROVIDER_KEY_MALFORMED" {
+			t.Fatalf("%q accepted: %v", bad, e)
+		}
+	}
+	if _, e := NormalizeKey(string(bytes.Repeat([]byte("a"), 5000))); e == nil {
+		t.Fatal("oversized key accepted")
+	}
+	s := Service{}
+	if m, d := s.Limits(); m != 4 || d != 500 {
+		t.Fatal(m, d)
+	}
+	s.LookupsPerMinute, s.LookupsPerDay = 240, 20000
+	if m, d := s.Limits(); m != 240 || d != 20000 {
+		t.Fatal(m, d)
+	}
+	s.LookupsPerMinute, s.LookupsPerDay = -1, 0
+	if m, d := s.Limits(); m != 4 || d != 500 {
+		t.Fatal("invalid limits not replaced by defaults")
+	}
+	// Saving is refused before any database access when encryption is unavailable.
+	if e := (&Service{}).Save(context.Background(), "owner", "openai", "model", "key", true); e == nil || e.Error() != "PROVIDER_ENCRYPTION_UNAVAILABLE" {
+		t.Fatal(e)
+	}
+	for want, args := range map[string][3]string{"PROVIDER_UNSUPPORTED": {"other", "m", "k"}, "PROVIDER_MODEL_INVALID": {"openai", "bad model", "k"}, "PROVIDER_KEY_MALFORMED": {"openai", "model", "a b"}} {
+		svc := &Service{Master: bytes.Repeat([]byte{1}, 32)}
+		if args[0] == "other" {
+			svc = svc.For("other")
+		}
+		if e := svc.Save(context.Background(), "owner", args[0], args[1], args[2], true); e == nil || e.Error() != want {
+			t.Fatalf("%s: %v", want, e)
+		}
 	}
 }

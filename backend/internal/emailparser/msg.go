@@ -6,6 +6,7 @@ import (
 	"github.com/AkmalOt/gomsg"
 	"io"
 	"net/http"
+	"net/mail"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,26 +45,67 @@ func ParseMSG(data []byte, name string) (out Email, err error) {
 	if e != nil || reader.failed {
 		return out, fmt.Errorf("INVALID_OR_LIMITED_MSG")
 	}
-	out = Email{Source: "msg", Filename: filepath.Base(name), SHA256: hash(data), MessageID: m.MessageID, Subject: m.Subject, Sender: m.SenderSMTP, Text: m.Body, HTML: string(m.BodyHTML), Recipients: []string{m.DisplayTo, m.DisplayCC}, Attachments: []Attachment{}, Headers: map[string][]string{}, Warnings: []string{"MSG_PARTIAL_EVIDENCE", "AUTHENTICATION_HEADERS_UNVERIFIED"}}
+	sender := strings.TrimSpace(m.SenderSMTP)
+	warnings := []string{"MSG_PARTIAL_EVIDENCE"}
+	if sender == "" && strings.Contains(m.SenderEmail, "@") {
+		sender = strings.TrimSpace(m.SenderEmail)
+	}
+	if sender == "" && m.SenderEmail != "" {
+		// Exchange (EX) addresses are internal directory names, not SMTP addresses.
+		warnings = append(warnings, "MSG_SENDER_NOT_SMTP_ADDRESS")
+	}
+	if name := strings.TrimSpace(m.SenderName); name != "" && sender != "" && !strings.EqualFold(name, sender) {
+		sender = (&mail.Address{Name: name, Address: sender}).String()
+	} else if sender == "" {
+		sender = strings.TrimSpace(m.SenderName)
+	}
+	recipients := []string{}
+	for _, value := range []string{m.DisplayTo, m.DisplayCC} {
+		if strings.TrimSpace(value) != "" {
+			recipients = append(recipients, strings.TrimSpace(value))
+		}
+	}
+	out = Email{Source: "msg", Filename: filepath.Base(name), SHA256: hash(data), MessageID: m.MessageID, Subject: m.Subject, Sender: sender, Text: m.Body, HTML: string(m.BodyHTML), Recipients: recipients, Attachments: []Attachment{}, Headers: map[string][]string{}, Warnings: warnings}
+	for _, candidate := range []time.Time{m.Date, m.DeliveryTime} {
+		if !candidate.IsZero() && candidate.Year() > 1990 {
+			stamp := candidate.UTC()
+			out.Timestamp = &stamp
+			break
+		}
+	}
 	if m.Headers != "" {
-		raw := m.Headers + "\r\n\r\n"
+		// PidTagTransportMessageHeaders holds the original Internet headers.
+		raw := strings.TrimRight(m.Headers, "\x00\r\n ") + "\r\n\r\n"
 		if h, x := Parse([]byte(raw), "headers.eml", "eml", "", ""); x == nil {
 			out.Headers = h.Headers
 			out.ReplyTo = h.ReplyTo
 			out.AuthenticationResults = h.AuthenticationResults
-			out.Timestamp = h.Timestamp
+			if h.Timestamp != nil {
+				out.Timestamp = h.Timestamp
+			}
 			if h.Sender != "" {
 				out.Sender = h.Sender
 			}
 			if h.MessageID != "" {
 				out.MessageID = h.MessageID
 			}
+			if out.Subject == "" {
+				out.Subject = h.Subject
+			}
+			if len(out.Recipients) == 0 {
+				out.Recipients = h.Recipients
+			}
 			out.AvailableEvidence = []string{"headers", "body"}
+		} else {
+			out.Warnings = append(out.Warnings, "MSG_TRANSPORT_HEADERS_UNREADABLE")
 		}
 	}
 	if len(out.Headers) == 0 {
 		out.Warnings = append(out.Warnings, "MISSING_EMAIL_HEADERS")
 		out.AvailableEvidence = []string{"body"}
+	}
+	if out.Sender == "" {
+		out.Warnings = append(out.Warnings, "MISSING_SENDER")
 	}
 	total := len(out.Text) + len(out.HTML)
 	if len(m.Attachments) > 32 {

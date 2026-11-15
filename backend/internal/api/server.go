@@ -3,24 +3,28 @@ package api
 import (
 	"context"
 	"crypto/sha256"
-	"cyberguard.local/backend/internal/auth"
-	"cyberguard.local/backend/internal/providers"
-	"cyberguard.local/backend/internal/virustotal"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/gorilla/mux"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"cyberguard.local/backend/internal/auth"
+	"cyberguard.local/backend/internal/dbschema"
+	"cyberguard.local/backend/internal/providers"
+	"cyberguard.local/backend/internal/virustotal"
+	"github.com/google/uuid"
+	"github.com/gorilla/mux"
 )
 
 type Server struct {
-	VirusTotalFactory  func(string) *virustotal.Client
+	VirusTotalFactory func(string) *virustotal.Client
+	// VirusTotalBaseURL overrides the provider endpoint (operator/test setting).
+	VirusTotalBaseURL  string
 	ProviderSettings   *providers.Service
 	PublicRegistration bool
 	Auth               *auth.Service
@@ -68,17 +72,30 @@ func (s *Server) cookie(w http.ResponseWriter, token string) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: "cyberguard_csrf", Value: csrf, Path: "/", HttpOnly: false, Secure: s.Secure, SameSite: http.SameSiteStrictMode, MaxAge: age})
 }
+
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if s.Auth.DB.Ping(ctx) != nil {
+		fail(w, r, 503, "DATABASE_UNAVAILABLE")
+		return
+	}
+	// A reachable database with missing migrations is not healthy: provider
+	// settings and analysis requests would all fail.
+	version, dirty, err := dbschema.Version(ctx, s.Auth.DB)
+	if err == nil {
+		err = dbschema.Evaluate(version, dirty)
+	}
+	if err != nil {
+		JSON(w, 503, map[string]any{"status": "degraded", "error": map[string]any{"code": "DATABASE_SCHEMA_OUTDATED", "message": dbschema.Explain(err), "request_id": w.Header().Get("X-Request-ID")}, "schema_version": version, "required_schema_version": dbschema.Required})
+		return
+	}
+	JSON(w, 200, map[string]any{"status": "ok", "schema_version": version})
+}
+
 func (s *Server) Router() http.Handler {
 	r := mux.NewRouter()
-	r.HandleFunc("/api/v1/health", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if s.Auth.DB.Ping(ctx) != nil {
-			fail(w, r, 503, "DATABASE_UNAVAILABLE")
-			return
-		}
-		JSON(w, 200, map[string]string{"status": "ok"})
-	}).Methods("GET")
+	r.HandleFunc("/api/v1/health", s.health).Methods("GET")
 	r.HandleFunc("/api/v1/config/public", func(w http.ResponseWriter, r *http.Request) {
 		JSON(w, 200, map[string]any{"languages": []string{"en", "ru", "kk"}, "max_email_size": 10 << 20, "public_signup": s.PublicRegistration})
 	}).Methods("GET")
@@ -89,12 +106,13 @@ func (s *Server) Router() http.Handler {
 	s.analysisRoutes(p)
 	p.HandleFunc("/settings/ai-provider", s.providerSettings).Methods("GET", "POST", "DELETE")
 	p.HandleFunc("/settings/ai-provider/test", s.providerTest).Methods("POST")
+	p.HandleFunc("/settings/ai-provider/models", s.providerModels).Methods("GET")
 	p.HandleFunc("/settings/virustotal", s.providerSettings).Methods("GET", "POST", "DELETE")
 	p.HandleFunc("/settings/virustotal/test", s.providerTest).Methods("POST")
 	p.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		v := r.Context().Value(key(0)).(auth.Session)
 		if e := s.Auth.Logout(r.Context(), v.Token); e != nil {
-			fail(w, r, 500, "INTERNAL_ERROR")
+			internal(w, r, "logout", e)
 			return
 		}
 		s.cookie(w, "")
@@ -103,6 +121,10 @@ func (s *Server) Router() http.Handler {
 	p.HandleFunc("/auth/activate-account", s.password).Methods("POST")
 	p.HandleFunc("/auth/change-password", s.password).Methods("POST")
 	p.HandleFunc("/auth/me", func(w http.ResponseWriter, r *http.Request) { JSON(w, 200, r.Context().Value(key(0))) }).Methods("GET")
+	// Unknown routes answer in the API error format instead of plain text, so
+	// the frontend can tell a contract mismatch from a server failure.
+	r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fail(w, r, 404, "ROUTE_NOT_FOUND") })
+	r.MethodNotAllowedHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fail(w, r, 405, "METHOD_NOT_ALLOWED") })
 	slots := make(chan struct{}, 8)
 	bounded := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		select {
@@ -114,7 +136,12 @@ func (s *Server) Router() http.Handler {
 			fail(w, req, 503, "SERVER_BUSY")
 			return
 		}
-		ctx, cancel := context.WithTimeout(req.Context(), 65*time.Second)
+		// Analysis waits for external providers; everything else is quick.
+		budget := 30 * time.Second
+		if req.Method == "POST" && (req.URL.Path == "/api/v1/analyses" || strings.HasSuffix(req.URL.Path, "/virustotal")) {
+			budget = 170 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(req.Context(), budget)
 		defer cancel()
 		r.ServeHTTP(w, req.WithContext(ctx))
 	})
@@ -164,6 +191,11 @@ func (s *Server) session(next http.Handler) http.Handler {
 		}
 		v, e := s.Auth.Resolve(r.Context(), c.Value)
 		if e != nil {
+			if !errors.Is(e, auth.ErrSession) {
+				// A storage failure is not an expired session: do not sign the user out.
+				internal(w, r, "session", e)
+				return
+			}
 			fail(w, r, 401, "UNAUTHENTICATED")
 			return
 		}
@@ -178,7 +210,10 @@ func (s *Server) session(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), key(0), v)))
 	})
 }
-func (s *Server) allowed(remote string) bool {
+
+// allowed applies a per-address fixed-window limit. Scopes are independent so
+// that saving or testing provider settings can never lock a user out of sign-in.
+func (s *Server) allowed(scope, remote string, limit int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.attempts == nil {
@@ -191,7 +226,8 @@ func (s *Server) allowed(remote string) bool {
 		}
 	}
 	ip, _, _ := net.SplitHostPort(remote)
-	b := s.attempts[ip]
+	id := scope + "|" + ip
+	b := s.attempts[id]
 	if b.until.IsZero() {
 		if len(s.attempts) >= 10000 {
 			return false
@@ -199,11 +235,12 @@ func (s *Server) allowed(remote string) bool {
 		b.until = now.Add(time.Minute)
 	}
 	b.count++
-	s.attempts[ip] = b
-	return b.count <= 10
+	s.attempts[id] = b
+	return b.count <= limit
 }
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if !s.allowed(r.RemoteAddr) {
+	if !s.allowed("auth", r.RemoteAddr, 10) {
+		w.Header().Set("Retry-After", "60")
 		fail(w, r, 429, "RATE_LIMITED")
 		return
 	}
@@ -220,7 +257,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(e, auth.ErrCredentials) {
 			fail(w, r, 401, "INVALID_CREDENTIALS")
 		} else {
-			fail(w, r, 500, "INTERNAL_ERROR")
+			internal(w, r, "login", e)
 		}
 		return
 	}
@@ -231,7 +268,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	JSON(w, 200, v)
 }
 func (s *Server) password(w http.ResponseWriter, r *http.Request) {
-	if !s.allowed(r.RemoteAddr) {
+	if !s.allowed("password", r.RemoteAddr, 10) {
+		w.Header().Set("Retry-After", "60")
 		fail(w, r, 429, "RATE_LIMITED")
 		return
 	}

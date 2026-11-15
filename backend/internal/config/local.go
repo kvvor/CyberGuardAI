@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -67,6 +68,26 @@ func ValidateMasterKey() error {
 	b, err := base64.StdEncoding.DecodeString(os.Getenv("PROVIDER_MASTER_KEY"))
 	if err != nil || len(b) != 32 {
 		return fmt.Errorf("PROVIDER_MASTER_KEY must contain 32 random bytes encoded as base64; run scripts/initialize-provider-key.ps1 once")
+	}
+	return nil
+}
+
+// ValidateBaseURL checks an optional operator-supplied provider endpoint
+// override. Plain HTTP is accepted only for loopback (local mocks and tests) so
+// that a credential is never sent unencrypted across a network.
+func ValidateBaseURL(name string) error {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s must be an absolute URL without credentials or query", name)
+	}
+	host := u.Hostname()
+	loopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopback) {
+		return fmt.Errorf("%s must use https (http is allowed only for localhost)", name)
 	}
 	return nil
 }

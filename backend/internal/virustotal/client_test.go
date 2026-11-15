@@ -46,7 +46,7 @@ func TestBoundariesAndDeduplication(t *testing.T) {
 	}
 	requests = 0
 	results = c.LookupMany(context.Background(), []string{hash, strings.Repeat("b", 64)}, func() bool { return false })
-	if requests != 0 || results[1].Status != "rate_limited" {
+	if requests != 0 || results[0].Status != "deferred_local_limit" || results[1].Status != "deferred_local_limit" {
 		t.Fatal(results)
 	}
 	c.Key = ""

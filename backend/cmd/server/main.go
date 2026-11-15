@@ -5,12 +5,16 @@ import (
 	"cyberguard.local/backend/internal/api"
 	"cyberguard.local/backend/internal/auth"
 	"cyberguard.local/backend/internal/config"
+	"cyberguard.local/backend/internal/dbschema"
+	"cyberguard.local/backend/internal/detection"
+	"cyberguard.local/backend/internal/providers"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -42,6 +46,22 @@ func run() error {
 	defer cancelCheck()
 	if db.Ping(check) != nil {
 		return fmt.Errorf("database connection failed; check DATABASE_URL and PostgreSQL service")
+	}
+	// Refuse to serve against a database whose migrations do not match this
+	// build: every provider and analysis request would otherwise fail later
+	// with an opaque server error.
+	if err := dbschema.Check(check, db); err != nil {
+		return fmt.Errorf("database schema check failed: %s", dbschema.Explain(err))
+	}
+	for _, name := range []string{"OPENAI_BASE_URL", "VIRUSTOTAL_BASE_URL"} {
+		if err := config.ValidateBaseURL(name); err != nil {
+			return err
+		}
+	}
+	for _, id := range strings.Split(os.Getenv("TRUSTED_AUTHSERV_IDS"), ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			detection.TrustedAuthServers = append(detection.TrustedAuthServers, id)
+		}
 	}
 	origin := os.Getenv("APP_ORIGIN")
 	if origin == "" {
@@ -85,10 +105,14 @@ func run() error {
 			}
 		}
 	}()
-	handler := (&api.Server{Auth: service, Origin: origin, Secure: os.Getenv("COOKIE_SECURE") == "true", PublicRegistration: os.Getenv("PUBLIC_REGISTRATION_ENABLED") == "true"}).Router()
-	srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
+	handler := (&api.Server{Auth: service, Origin: origin, Secure: os.Getenv("COOKIE_SECURE") == "true", PublicRegistration: os.Getenv("PUBLIC_REGISTRATION_ENABLED") == "true", ProviderSettings: providers.FromEnv(db), VirusTotalBaseURL: strings.TrimRight(os.Getenv("VIRUSTOTAL_BASE_URL"), "/")}).Router()
+	// WriteTimeout must exceed the 170-second analysis budget enforced by the router.
+	srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 185 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16384}
 	errs := make(chan error, 1)
-	go func() { slog.Info("HTTP server listening", "address", addr); errs <- srv.ListenAndServe() }()
+	go func() {
+		slog.Info("HTTP server listening", "address", addr, "origin", origin, "schema_version", dbschema.Required, "public_registration", os.Getenv("PUBLIC_REGISTRATION_ENABLED") == "true")
+		errs <- srv.ListenAndServe()
+	}()
 	select {
 	case e := <-errs:
 		if e == http.ErrServerClosed {

@@ -14,7 +14,10 @@ import (
 type HistoryFilter struct {
 	Page, Size                  int
 	Mode, Verdict, Search, Sort string
-	From, To                    *time.Time
+	// Status is "", "complete" (validated assessment), "partial" (no verdict)
+	// or "legacy" (historical weighted-score reports).
+	Status   string
+	From, To *time.Time
 }
 
 func ParseHistory(q url.Values) (HistoryFilter, error) {
@@ -41,6 +44,12 @@ func ParseHistory(q url.Values) (HistoryFilter, error) {
 	f.Verdict = q.Get("verdict")
 	switch f.Verdict {
 	case "", "legitimate", "suspicious", "phishing", "inconclusive":
+	default:
+		return f, bad
+	}
+	f.Status = q.Get("status")
+	switch f.Status {
+	case "", "complete", "partial", "legacy":
 	default:
 		return f, bad
 	}
@@ -82,8 +91,18 @@ func History(ctx context.Context, db *pgxpool.Pool, owner string, f HistoryFilte
 		return nil, 0, fmt.Errorf("invalid sort")
 	}
 	search := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(f.Search)
-	where := ` FROM analyses WHERE user_id=$1 AND mode=$2 AND ($3='' OR verdict=$3) AND (subject ILIKE $4 OR sender ILIKE $4) AND ($5::timestamptz IS NULL OR created_at >= $5) AND ($6::timestamptz IS NULL OR created_at < $6)`
+	// An incomplete analysis stores the placeholder verdict "inconclusive" in
+	// the SQL column; it has no verdict and must not match a verdict filter.
+	where := ` FROM analyses WHERE user_id=$1 AND mode=$2 AND ($3='' OR (verdict=$3 AND (status='complete' OR scoring_version<>'3.0.0'))) AND (subject ILIKE $4 OR sender ILIKE $4) AND ($5::timestamptz IS NULL OR created_at >= $5) AND ($6::timestamptz IS NULL OR created_at < $6)`
 	args := []any{owner, f.Mode, f.Verdict, "%" + search + "%", f.From, f.To}
+	switch f.Status {
+	case "complete":
+		where += ` AND status='complete' AND scoring_version='3.0.0'`
+	case "partial":
+		where += ` AND status='partial' AND scoring_version='3.0.0'`
+	case "legacy":
+		where += ` AND scoring_version<>'3.0.0'`
+	}
 	var total int
 	if e := db.QueryRow(ctx, "SELECT count(*)"+where, args...).Scan(&total); e != nil {
 		return nil, 0, e

@@ -14,7 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"os"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type Adapter interface {
@@ -38,6 +41,11 @@ type Service struct {
 	Master                     []byte
 	FallbackKey, FallbackModel string
 	FallbackEnabled            bool
+	// OpenAIBaseURL overrides https://api.openai.com/v1 (operator setting for
+	// gateways and mocked end-to-end tests). Never taken from user input.
+	OpenAIBaseURL string
+	// Client-side VirusTotal guard. Defaults follow the Public API allowance.
+	LookupsPerMinute, LookupsPerDay int
 }
 
 func (s *Service) name() string {
@@ -59,7 +67,26 @@ func (s *Service) For(provider string) *Service {
 
 func FromEnv(db *pgxpool.Pool) *Service {
 	k, _ := base64.StdEncoding.DecodeString(os.Getenv("PROVIDER_MASTER_KEY"))
-	return &Service{DB: db, Master: k, FallbackKey: os.Getenv("OPENAI_API_KEY"), FallbackModel: os.Getenv("OPENAI_MODEL"), FallbackEnabled: os.Getenv("OPENAI_OPERATOR_FALLBACK_ENABLED") == "true"}
+	s := &Service{DB: db, Master: k, FallbackKey: os.Getenv("OPENAI_API_KEY"), FallbackModel: os.Getenv("OPENAI_MODEL"), FallbackEnabled: os.Getenv("OPENAI_OPERATOR_FALLBACK_ENABLED") == "true", OpenAIBaseURL: strings.TrimRight(os.Getenv("OPENAI_BASE_URL"), "/")}
+	s.LookupsPerMinute, _ = strconv.Atoi(os.Getenv("VIRUSTOTAL_REQUESTS_PER_MINUTE"))
+	s.LookupsPerDay, _ = strconv.Atoi(os.Getenv("VIRUSTOTAL_REQUESTS_PER_DAY"))
+	return s
+}
+
+// NormalizeKey removes the whitespace that copy/paste adds around a secret and
+// rejects values that cannot be sent as an HTTP header (the previous code
+// stored them and later reported a misleading network failure).
+func NormalizeKey(key string) (string, error) {
+	key = strings.TrimSpace(key)
+	if len(key) > 4096 {
+		return "", errors.New("INVALID_PROVIDER_SETTINGS")
+	}
+	for _, r := range key {
+		if r > unicode.MaxASCII || unicode.IsSpace(r) || unicode.IsControl(r) {
+			return "", errors.New("PROVIDER_KEY_MALFORMED")
+		}
+	}
+	return key, nil
 }
 func (s *Service) crypt() (cipher.AEAD, error) {
 	if len(s.Master) != 32 {
@@ -120,11 +147,32 @@ func (s *Service) Save(ctx context.Context, owner, provider, model, key string, 
 	if provider != s.name() || (provider != "openai" && provider != "virustotal") {
 		return errors.New("PROVIDER_UNSUPPORTED")
 	}
-	if (provider == "openai" && !modelPattern.MatchString(model)) || len(key) > 4096 {
-		return errors.New("INVALID_PROVIDER_SETTINGS")
+	model = strings.TrimSpace(model)
+	if provider == "openai" && !modelPattern.MatchString(model) {
+		return errors.New("PROVIDER_MODEL_INVALID")
+	}
+	if provider != "openai" {
+		model = ""
+	}
+	key, e := NormalizeKey(key)
+	if e != nil {
+		return e
+	}
+	if _, e = s.crypt(); e != nil {
+		// Fail before touching the database, even when no new key is supplied.
+		return e
+	}
+	if key == "" {
+		// A first save without a key would create an unusable "enabled" row.
+		var exists bool
+		if e = s.DB.QueryRow(ctx, `SELECT credential IS NOT NULL FROM provider_settings WHERE user_id=$1 AND provider=$2`, owner, provider).Scan(&exists); e != nil && !errors.Is(e, pgx.ErrNoRows) {
+			return e
+		}
+		if !exists {
+			return errors.New("PROVIDER_KEY_REQUIRED")
+		}
 	}
 	var encrypted []byte
-	var e error
 	if key != "" {
 		encrypted, e = s.Seal(owner, key)
 		if e != nil {
@@ -156,7 +204,7 @@ func (s *Service) Resolve(ctx context.Context, owner string) (Config, *ai.Client
 	if s.ClientFactory != nil {
 		return c, s.ClientFactory(key, c.Model), nil
 	}
-	return c, &ai.Client{Key: key, Model: c.Model}, nil
+	return c, &ai.Client{Key: key, Model: c.Model, BaseURL: s.OpenAIBaseURL}, nil
 }
 func (s *Service) Tested(ctx context.Context, owner string, c Config, code string) error {
 	status := "credential_validated"
@@ -171,14 +219,31 @@ func (s *Service) Tested(ctx context.Context, owner string, c Config, code strin
 	return e
 }
 
-// ReserveLookup enforces conservative per-user VT quotas across server processes.
-// Replacement or deletion of a credential never resets the quota counters.
+// Limits returns the effective client-side VirusTotal request allowance.
+func (s *Service) Limits() (perMinute, perDay int) {
+	perMinute, perDay = s.LookupsPerMinute, s.LookupsPerDay
+	if perMinute < 1 || perMinute > 1000 {
+		perMinute = 4
+	}
+	if perDay < 1 || perDay > 1000000 {
+		perDay = 500
+	}
+	return
+}
+
+// ReserveLookup atomically reserves one VirusTotal request for the owner. It
+// enforces a true sliding 60-second window plus a UTC daily allowance across
+// server processes. Replacing or deleting a credential never resets counters.
+// The limit protects the user's quota; VirusTotal still enforces its own.
 func (s *Service) ReserveLookup(ctx context.Context, owner string) (bool, error) {
-	tag, err := s.DB.Exec(ctx, `UPDATE provider_settings SET next_lookup_at=now()+interval '15 seconds',
+	perMinute, perDay := s.Limits()
+	tag, err := s.DB.Exec(ctx, `UPDATE provider_settings SET
+ lookup_recent=array_append(ARRAY(SELECT t FROM unnest(lookup_recent) t WHERE t>now()-interval '60 seconds'),now()),
+ next_lookup_at=NULL,
  lookup_count=CASE WHEN lookup_day=(now() AT TIME ZONE 'UTC')::date THEN lookup_count+1 ELSE 1 END,
  lookup_day=(now() AT TIME ZONE 'UTC')::date
  WHERE user_id=$1 AND provider='virustotal' AND credential IS NOT NULL
- AND (next_lookup_at IS NULL OR next_lookup_at<=now())
- AND (lookup_day IS DISTINCT FROM (now() AT TIME ZONE 'UTC')::date OR lookup_count<500)`, owner)
+ AND (SELECT count(*) FROM unnest(lookup_recent) t WHERE t>now()-interval '60 seconds')<$2
+ AND (lookup_day IS DISTINCT FROM (now() AT TIME ZONE 'UTC')::date OR lookup_count<$3)`, owner, perMinute, perDay)
 	return tag.RowsAffected() == 1, err
 }

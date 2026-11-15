@@ -4,6 +4,7 @@ import (
 	"context"
 	"cyberguard.local/backend/internal/auth"
 	"cyberguard.local/backend/internal/config"
+	"cyberguard.local/backend/internal/dbschema"
 	"flag"
 	"fmt"
 	"github.com/golang-migrate/migrate/v4"
@@ -26,11 +27,33 @@ func run() error {
 		return err
 	}
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: cyberguardctl migrate | users create|reset-password|disable --email EMAIL [--name NAME]")
+		return fmt.Errorf("usage: cyberguardctl migrate | status | users create|reset-password|disable --email EMAIL [--name NAME]")
 	}
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		return fmt.Errorf("DATABASE_URL is required")
+	}
+	if os.Args[1] == "status" {
+		// Read-only check used by the setup and start scripts.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		db, e := pgxpool.New(ctx, dsn)
+		if e != nil {
+			return fmt.Errorf("DATABASE_URL is not a valid PostgreSQL connection string")
+		}
+		defer db.Close()
+		if db.Ping(ctx) != nil {
+			return fmt.Errorf("cannot connect to PostgreSQL; check that the service is running and that DATABASE_URL has the right host, port, database, user and password")
+		}
+		version, dirty, e := dbschema.Version(ctx, db)
+		if e == nil {
+			e = dbschema.Evaluate(version, dirty)
+		}
+		if e != nil {
+			return fmt.Errorf("%s", dbschema.Explain(e))
+		}
+		fmt.Println("Database reachable; schema version", version, "matches this application.")
+		return nil
 	}
 	if os.Args[1] == "migrate" {
 		path := os.Getenv("MIGRATIONS_PATH")
@@ -41,14 +64,19 @@ func run() error {
 		dsn = strings.Replace(dsn, "postgresql://", "pgx5://", 1)
 		m, e := migrate.New("file://"+path, dsn)
 		if e != nil {
-			return fmt.Errorf("migration initialization failed")
+			return fmt.Errorf("migration initialization failed; check DATABASE_URL, that PostgreSQL is running and that MIGRATIONS_PATH (%s) exists", path)
 		}
 		defer m.Close()
 		e = m.Up()
-		if e == migrate.ErrNoChange {
-			return nil
+		if e != nil && e != migrate.ErrNoChange {
+			return fmt.Errorf("migration failed: %v", e)
 		}
-		return e
+		version, _, _ := m.Version()
+		fmt.Println("Database schema is at version", version, "- required:", dbschema.Required)
+		if int(version) != dbschema.Required {
+			return fmt.Errorf("schema version %d does not match required version %d; application files and migrations are out of sync", version, dbschema.Required)
+		}
+		return nil
 	}
 	if len(os.Args) < 3 || os.Args[1] != "users" {
 		return fmt.Errorf("invalid command")
