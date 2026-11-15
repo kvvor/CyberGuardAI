@@ -80,7 +80,7 @@ func (s *Server) executeAI(ctx context.Context, id string, requested, consent bo
 	if e != nil {
 		x.Status = "failed"
 		x.Failure = failureCode(e)
-		x.Status = map[string]string{"PROVIDER_RATE_LIMITED": "rate_limited", "PROVIDER_INSUFFICIENT_QUOTA": "quota_exceeded", "PROVIDER_INVALID_CREDENTIALS": "authentication_failed", "PROVIDER_MODEL_UNAVAILABLE": "unsupported_model", "PROVIDER_INVALID_OUTPUT": "invalid_response", "PROVIDER_TIMEOUT": "timeout", "PROVIDER_NETWORK_FAILURE": "network_error"}[x.Failure]
+		x.Status = map[string]string{"PROVIDER_RATE_LIMITED": "rate_limited", "PROVIDER_INSUFFICIENT_QUOTA": "quota_exceeded", "PROVIDER_INVALID_CREDENTIALS": "authentication_failed", "PROVIDER_UNSUPPORTED_MODEL": "unsupported_model", "PROVIDER_INVALID_OUTPUT": "invalid_response", "PROVIDER_TIMEOUT": "timeout", "PROVIDER_NETWORK_FAILURE": "network_error", "PROVIDER_ERROR": "provider_error"}[x.Failure]
 		if x.Status == "" {
 			x.Status = "provider_error"
 		}

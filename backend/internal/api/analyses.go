@@ -255,7 +255,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 400, "INVALID_FILTER")
 		return
 	}
-	rows, e := s.Auth.DB.Query(r.Context(), `SELECT verdict,risk_level,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD'),count(*) FROM analyses WHERE user_id=$1 AND mode=$2 AND created_at>=$3 GROUP BY 1,2,3 ORDER BY 3`, owner(r), mode, time.Now().AddDate(0, 0, -days))
+	rows, e := s.Auth.DB.Query(r.Context(), `SELECT verdict,risk_level,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD'),status,scoring_version,count(*) FROM analyses WHERE user_id=$1 AND mode=$2 AND created_at>=$3 GROUP BY 1,2,3,4,5 ORDER BY 3`, owner(r), mode, time.Now().AddDate(0, 0, -days))
 	if e != nil {
 		fail(w, r, 500, "INTERNAL_ERROR")
 		return
@@ -265,15 +265,23 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	risks := map[string]int{"low": 0, "medium": 0, "high": 0, "critical": 0}
 	dates := map[string]int{}
 	total := 0
+	completed, incomplete, legacy := 0, 0, 0
 	for rows.Next() {
-		var v, l, d string
+		var v, l, d, status, version string
 		var n int
-		if rows.Scan(&v, &l, &d, &n) != nil {
+		if rows.Scan(&v, &l, &d, &status, &version, &n) != nil {
 			fail(w, r, 500, "INTERNAL_ERROR")
 			return
 		}
-		verdicts[v] += n
-		risks[l] += n
+		if version != "3.0.0" {
+			legacy += n
+		} else if status == "complete" {
+			completed += n
+			verdicts[v] += n
+			risks[l] += n
+		} else {
+			incomplete += n
+		}
 		dates[d] += n
 		total += n
 	}
@@ -283,6 +291,9 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	result := map[string]any{"total_analyses": total, "verdict_distribution": verdicts, "risk_distribution": risks, "activity": dates, "mode": mode}
+	result["completed_count"] = completed
+	result["incomplete_count"] = incomplete
+	result["legacy_count"] = legacy
 	series := []map[string]any{}
 	keys := []string{}
 	for d := range dates {

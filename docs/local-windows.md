@@ -1,66 +1,100 @@
-# Local Windows startup (no Docker)
+﻿# Установка CyberGuard AI на Windows 10/11
 
-PostgreSQL 18 service: postgresql-x64-18. Executables:
-`D:\Programs\PostgreSQL\bin`. Backend: `127.0.0.1:8080`.
+Проект находится в процессе переработки. Проверенные части и оставшиеся
+ограничения перечислены в rework-checkpoint.md. Не публикуйте локальную установку
+в интернете без отдельной проверки безопасности и настройки HTTPS.
 
-Run these commands in your own PowerShell terminal. Never paste passwords into
-chat, command-line arguments, source code, or Git.
-
-```powershell
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend" -ErrorAction Stop
-powershell -NoProfile -File .\scripts\setup-postgres.ps1
-```
-
-The script prompts for the administrator password using secure local input. It
-creates cyberguard_app only if absent, and cyberguard/cyberguard_test databases
-only if absent. Existing role passwords and databases are never reset. An existing
-application role requires its current password. Credentials are saved to ignored
-.env.local; protect this file using your Windows user permissions.
-
-Apply application migrations, start the backend, or run integration tests:
+1. На странице GitHub выберите ветку feature/full-rework, Code → Download ZIP.
+   Распакуйте архив в любую папку, включая путь с пробелами.
+2. Установите Go версии из backend/go.mod или новее, Node.js с npm, PostgreSQL.
+   Откройте новое окно PowerShell после установки, проверьте `go version`,
+   `node --version`, `npm.cmd --version`. Используйте обычную учётную запись Windows.
+3. Запустите установленную службу PostgreSQL через приложение «Службы».
+   Имя службы зависит от установленной версии. Не удаляйте существующие базы.
+4. Перейдите в распакованную папку:
 
 ```powershell
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend" -ErrorAction Stop
-powershell -NoProfile -File .\scripts\backend.ps1 -Mode migrate
-powershell -NoProfile -File .\scripts\backend.ps1 -Mode start
-# In a second terminal:
-powershell -NoProfile -File .\scripts\backend.ps1 -Mode test
+Set-Location -LiteralPath 'C:\Users\YourName\Downloads\CyberGuardAI-feature-full-rework'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-postgres.ps1
 ```
 
-The test command applies migrations only to cyberguard_test and never drops a
-database. Tests create random accounts and delete their own test data. Do not put
-real user data in cyberguard_test. The runtime role must not be a superuser.
-
-Provision a user in a terminal after loading the application environment:
+Этот пример пути замените на собственный. Bypass действует только для данного
+процесса; системная политика не меняется. Просмотрите скрипт перед запуском.
+Если psql.exe отсутствует в PATH, передайте полный путь к установленному файлу:
 
 ```powershell
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend" -ErrorAction Stop
-foreach ($line in Get-Content -LiteralPath .env.local) {
-    if ($line -match '^DATABASE_URL=(.+)$') { $env:DATABASE_URL=$Matches[1] }
-}
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend\backend" -ErrorAction Stop
-go run ./cmd/cyberguardctl users create --email analyst@example.com --name Analyst
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-postgres.ps1 -PsqlPath 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
 ```
 
-The temporary password appears once in that terminal. Deliver it over a trusted
-channel. Reset uses `users reset-password --email EMAIL`; disable uses
-`users disable --email EMAIL`.
+Номер версии и путь — пример, не требование. Скрипт локально запрашивает пароль
+администратора, создаёт роль cyberguard_app без повышенных прав и отсутствующие
+базы cyberguard/cyberguard_test. Существующие пароли и базы не сбрасываются.
+Пароль приложения кодируется для URL, включая специальные символы.
+Настройки сохраняются в исключённый из Git файл .env.local. Не передавайте его
+другим людям. Если .env.local уже существует, скрипт завершится без изменений.
 
-Process configuration examples (no credentials):
+Если роль и база созданы вручную через pgAdmin, скопируйте .env.example в
+.env.local и укажите DATABASE_URL. Специальные символы пароля в URL должны быть
+percent-encoded. Не вставляйте секреты в команды, переписку или исходный код.
+
+5. Откройте .env.local в текстовом редакторе. Для регистрации через сайт задайте
+   `PUBLIC_REGISTRATION_ENABLED=true`. Остальные параметры берите из .env.example.
+   Значения читаются как данные, без выполнения PowerShell и подстановок.
+   Переменные текущего процесса имеют приоритет над файлом.
+6. Выполните настройку зависимостей и миграций:
 
 ```powershell
-$env:APP_ADDRESS='127.0.0.1:8080'
-$env:APP_ORIGIN='http://localhost:3000'
-$env:SESSION_IDLE_TIMEOUT='30m'
-$env:SESSION_ABSOLUTE_TIMEOUT='12h'
-$env:RETENTION_DAYS='0'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1
 ```
 
-Use the frontend proxy for /api. Exact-origin credentialed CORS is supported, but
-localhost and 127.0.0.1 are different sites for SameSite cookies. Use the proxy or
-consistent hostnames; do not weaken SameSite to compensate.
+Скрипт проверяет Go/Node/npm, создаёт постоянный ключ шифрования при его отсутствии,
+подключается к указанной базе, применяет миграции и выполняет npm.cmd ci.
+Если .env.local отсутствует, он создаёт шаблон и завершает работу: сначала
+заполните DATABASE_URL и повторите команду. Базы не пересоздаются.
+Сохраните резервную копию PROVIDER_MASTER_KEY отдельно от базы. При потере ключа
+сохранённые API-ключи восстановить нельзя: их потребуется удалить и ввести заново.
+Автоматическая ротация ключа не реализована; не заменяйте действующий ключ.
 
-From backend/, run `go build ./...`, `go test ./...`, `go vet ./...`, and
-`go test -race ./...`. On Windows the race detector requires a compatible GCC
-toolchain in PATH; the current environment has no gcc, so race execution is
-blocked until a compiler is provided. Ordinary builds/tests do not require it.
+7. Запустите backend и frontend в двух окнах PowerShell из корня проекта:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
+```
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-frontend.ps1
+```
+
+8. Откройте http://localhost:3000. Зарегистрируйтесь и войдите. Если регистрация
+   отключена, включите её в .env.local и перезапустите backend.
+9. В Settings настройте OpenAI: введите API-ключ, выберите модель, включите и
+   сохраните. Проверка подключения проверяет доступ к модели, не выполняя генерацию.
+   Реальный анализ может расходовать платную квоту OpenAI.
+10. Настройте VirusTotal отдельно. Проверка подключения отправляет публичный
+    тестовый хеш и расходует квоту. Проверьте ограничения вашей лицензии:
+    бесплатный API не подходит для произвольных коммерческих сценариев.
+11. Загрузите EML/MSG или вставьте письмо. Отдельно разрешите передачу данных
+    OpenAI и хешей вложений VirusTotal. Файлы провайдерам не загружаются.
+    Откройте результат, данные аутентификации, IOC и репутацию вложений.
+    История сохраняется; JSON/PDF доступны в отчёте.
+
+## Ошибки и диагностика
+
+- DATABASE_URL: проверьте имя базы, роль, пароль, порт и службу PostgreSQL.
+- PROVIDER_MASTER_KEY: запустите initialize-provider-key.ps1; не заменяйте уже
+  действующий ключ. Неверный или потерянный ключ не исправляется автоматически.
+- Занят порт: остановите прежний экземпляр приложения; frontend использует 3000,
+  backend — 8080. Изменение backend-порта требует изменения прокси Vite.
+- Ошибка Origin/CSRF: используйте localhost:3000, не смешивайте с 127.0.0.1.
+- Ошибка API: проверьте ключ, доступ к модели, квоты и сеть. Неизвестный хеш и
+  отсутствие обнаружений не доказывают безопасность вложения.
+- Большая группа вложений может частично получить rate_limited; очередь ещё не
+  реализована. Сбой ИИ оставляет частичный отчёт без выдуманного вердикта.
+- npm.ps1 заблокирован: используйте npm.cmd, не меняйте глобальную политику.
+
+Проверки разработчика выполняются в backend (`go build ./...`, `go test ./...`,
+`go vet ./...`) и frontend (`npm.cmd run test`, `npm.cmd run lint`,
+`npm.cmd run build`). `scripts/backend.ps1 -Mode test` использует только
+cyberguard_test, создаёт случайные тестовые аккаунты и удаляет только свои данные.
+Не храните реальные данные в тестовой базе. Внешние API в тестах имитируются.
+Чистая установка на отдельном Windows-компьютере и браузерный E2E пока не проверены.

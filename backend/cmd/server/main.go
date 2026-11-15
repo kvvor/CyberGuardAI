@@ -22,6 +22,12 @@ func main() {
 	}
 }
 func run() error {
+	if err := config.LoadLocal(); err != nil {
+		return err
+	}
+	if err := config.ValidateMasterKey(); err != nil {
+		return err
+	}
 	if os.Getenv("DATABASE_URL") == "" {
 		return fmt.Errorf("DATABASE_URL is required")
 	}
@@ -32,6 +38,11 @@ func run() error {
 		return fmt.Errorf("invalid database configuration")
 	}
 	defer db.Close()
+	check, cancelCheck := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelCheck()
+	if db.Ping(check) != nil {
+		return fmt.Errorf("database connection failed; check DATABASE_URL and PostgreSQL service")
+	}
 	origin := os.Getenv("APP_ORIGIN")
 	if origin == "" {
 		origin = "http://localhost:3000"

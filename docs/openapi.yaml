@@ -426,7 +426,7 @@ components:
         provider: {type: string}
         model: {type: string}
         configuration_source: {type: string}
-        status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited]}
+        status: {type: string, enum: [not_requested, not_configured, running, completed, failed, authentication_failed, quota_exceeded, rate_limited, unsupported_model, invalid_response, timeout, network_error, provider_error]}
         failure_code: {type: string}
         static_verdict: {type: string}
         deterministic_risk_score: {type: integer}
@@ -546,6 +546,49 @@ components:
         report:
           type: object
           properties:
+            evidence:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: {type: string}
+                  source: {type: string}
+                  value: {type: string}
+                  trust_status: {type: string}
+            authentication:
+              type: array
+              items:
+                type: object
+                properties:
+                  evidence_id: {type: string}
+                  mechanism: {type: string, enum: [spf, dkim, dmarc]}
+                  reported_result: {type: string}
+                  reporting_server: {type: string}
+                  evidence_source: {type: string}
+                  trust_status: {type: string}
+                  verification_status: {type: string}
+                  alignment_information: {type: string}
+                  limitations: {type: array, items: {type: string}}
+            virustotal_status: {type: string}
+            attachment_reputation:
+              type: array
+              items:
+                type: object
+                properties:
+                  sha256: {type: string}
+                  status: {type: string, enum: [not_requested, not_configured, skipped_no_attachments, checking, completed, not_found, authentication_failed, access_forbidden, rate_limited, timeout, network_error, provider_error]}
+                  source: {type: string}
+                  statistics: {type: object, additionalProperties: {type: integer}}
+                  last_analysis_at: {type: string, format: date-time}
+                  checked_at: {type: string, format: date-time}
+                  engines:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: {type: string}
+                        category: {type: string}
+                        result: {type: string}
             verdict: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}
             risk_score: {type: integer, minimum: 0, maximum: 100}
             risk_level: {type: string, enum: [low, medium, high, critical]}
@@ -556,7 +599,7 @@ components:
             limitations: {type: array, items: {type: string}}
             manual_review_required: {type: boolean}
             email: {$ref: '#/components/schemas/EmailMetadata'}
-            ai_status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited, unavailable]}
+            ai_status: {type: string, enum: [not_requested, not_configured, completed, failed, rate_limited, authentication_failed, quota_exceeded, unsupported_model, invalid_response, timeout, network_error, provider_error, unavailable]}
     NewPassword:
       type: object
       required: [new_password, confirm_password]

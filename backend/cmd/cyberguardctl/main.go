@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"cyberguard.local/backend/internal/auth"
+	"cyberguard.local/backend/internal/config"
 	"flag"
 	"fmt"
 	"github.com/golang-migrate/migrate/v4"
@@ -21,6 +22,9 @@ func main() {
 	}
 }
 func run() error {
+	if err := config.LoadLocal(); err != nil {
+		return err
+	}
 	if len(os.Args) < 2 {
 		return fmt.Errorf("usage: cyberguardctl migrate | users create|reset-password|disable --email EMAIL [--name NAME]")
 	}

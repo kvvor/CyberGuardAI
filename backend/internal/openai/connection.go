@@ -32,7 +32,7 @@ func ErrorCode(status int, body []byte) string {
 	case 400:
 		return "PROVIDER_UNSUPPORTED_MODEL"
 	default:
-		return "PROVIDER_NETWORK_FAILURE"
+		return "PROVIDER_ERROR"
 	}
 }
 

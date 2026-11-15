@@ -69,3 +69,43 @@ JSON remains in the database; obsolete mapping fields are omitted from read APIs
 Removed heuristic score accumulation, keyword judgments and Hybrid adjustment code.
 Backend/PostgreSQL tests and 44 frontend tests, lint/build passed. One old UI test
 asserting a removed badge was updated to require its absence and preserve reading.
+
+## Windows and integrated flow increment
+
+Implemented literal .env.local loading in server/CLI, environment precedence,
+startup encryption validation and database ping, portable setup/backend/frontend
+scripts and Russian fresh-install guide. No hardcoded developer path remains in
+runtime scripts. All PowerShell scripts passed syntax parsing. The key initialization
+script was executed from a temporary installation path with per-process Bypass;
+it generated one key and preserved it on a second run. Initial direct invocation
+was blocked by execution policy, then corrected; no global policy was changed.
+
+Started backend on port 18080 against cyberguard_test with a synthetic master key,
+and Vite on 13000. PostgreSQL health and frontend HTTP returned successfully; both
+temporary processes were stopped. This is HTTP smoke testing, not browser E2E.
+
+Added a mocked provider HTTP/PostgreSQL test: configure both providers, parse a
+multipart MIME email, hash attachment, look up VT, include reputation in model
+input, validate assessment, persist/reopen evidence, export PDF and clean up only
+its own records. Added MSG transport-header fixture proving Authentication-Results
+and routing survive parsing. Dashboard now separates completed/incomplete/legacy
+counts; incomplete results no longer count as model inconclusive verdicts.
+
+## Remaining release blockers (not completed)
+
+- Typed validation of every factual authentication/reputation claim in model prose;
+  current validation verifies schema, enums, references and exact quotes, not
+  arbitrary semantic truth. Model interpretations are not independent facts.
+- Durable queued/batched VT lookups; current conservative quota can leave excess
+  distinct hashes unqueried. Retry scheduling and per-license quotas are absent.
+- Independent DKIM verification, deeper SPF/DMARC alignment, robust multi-brand
+  impersonation comparison, broader URL-wrapper/IOC categorization coverage.
+- Full localization of forensic limitations and model contextual findings, which
+  can still include untranslated technical values or model text.
+- Complete labeled synthetic regression corpus and measured disagreements;
+  no real-world detection accuracy claim is supported.
+- Browser E2E, fresh-machine installation, accessibility/responsive manual review,
+  deployment hardening and race-detector validation. No live provider test ran.
+- Further API schema/implementation parity review and report semantics hardening.
+
+No push or merge to main has occurred. Local application data was not deleted.

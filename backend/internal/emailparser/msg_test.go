@@ -76,3 +76,25 @@ func TestSyntheticMSG(t *testing.T) {
 		t.Fatal("invalid format accepted")
 	}
 }
+
+func TestMSGTransportHeaders(t *testing.T) {
+	b := syntheticMSG()
+	// Turn the existing synthetic body stream into PidTagTransportMessageHeaders.
+	name := utf16.Encode([]rune("__substg1.0_007D001F\x00"))
+	for i, v := range name {
+		binary.LittleEndian.PutUint16(b[1024+2*128+i*2:], v)
+	}
+	binary.LittleEndian.PutUint32(b[1536+32:], 0x007d001f)
+	clear(b[5632:])
+	header := "From: Sender <sender@example.test>\r\nReply-To: reply@example.test\r\nAuthentication-Results: mx.example.test; spf=pass; dkim=fail; dmarc=fail\r\nReceived: from source.example.test by mx.example.test\r\n\r\n\x00"
+	for i, v := range utf16.Encode([]rune(header)) {
+		binary.LittleEndian.PutUint16(b[5632+i*2:], v)
+	}
+	e, err := ParseMSG(b, "headers.msg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.AuthenticationResults) != 1 || len(e.Headers["Received"]) != 1 || e.ReplyTo != "reply@example.test" || e.Sender != "Sender <sender@example.test>" {
+		t.Fatalf("lost MSG transport metadata: %+v", e)
+	}
+}

@@ -1,14 +1,14 @@
 param([ValidateSet('migrate','start','test')][string]$Mode='start')
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend" -ErrorAction Stop
+Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot) -ErrorAction Stop
 $ErrorActionPreference='Stop'
-if (Test-Path -LiteralPath '.env.local') {
+if ($Mode -eq 'test' -and -not $env:TEST_DATABASE_URL -and (Test-Path -LiteralPath '.env.local')) {
     foreach ($line in Get-Content -LiteralPath '.env.local') {
-        if ($line -match '^(DATABASE_URL|TEST_DATABASE_URL|PROVIDER_MASTER_KEY)=(.+)$') {
+        if ($line -match '^(TEST_DATABASE_URL)=(.+)$') {
             [Environment]::SetEnvironmentVariable($Matches[1],$Matches[2],'Process')
         }
     }
 }
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend\backend" -ErrorAction Stop
+Set-Location -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'backend') -ErrorAction Stop
 switch ($Mode) {
     'migrate' { go run ./cmd/cyberguardctl migrate }
     'start' { go run ./cmd/server }

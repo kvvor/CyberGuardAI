@@ -1,6 +1,8 @@
-Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend" -ErrorAction Stop
+param([string]$PsqlPath = 'psql.exe')
+Set-Location -LiteralPath (Split-Path -Parent $PSScriptRoot) -ErrorAction Stop
 $ErrorActionPreference = 'Stop'
-$psqlPath = 'D:\Programs\PostgreSQL\bin\psql.exe'
+if (-not (Get-Command $PsqlPath -ErrorAction SilentlyContinue)) { throw 'psql.exe not found. Add PostgreSQL bin to PATH or supply -PsqlPath with its installed location.' }
+if (Test-Path -LiteralPath '.env.local') { throw '.env.local already exists; existing configuration was not changed' }
 $adminSecret = Read-Host 'PostgreSQL postgres password (local input only)' -AsSecureString
 $credential = New-Object System.Management.Automation.PSCredential('postgres', $adminSecret)
 $previousPassword = $env:PGPASSWORD

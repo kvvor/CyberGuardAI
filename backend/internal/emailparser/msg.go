@@ -50,7 +50,20 @@ func ParseMSG(data []byte, name string) (out Email, err error) {
 		if h, x := Parse([]byte(raw), "headers.eml", "eml", "", ""); x == nil {
 			out.Headers = h.Headers
 			out.ReplyTo = h.ReplyTo
+			out.AuthenticationResults = h.AuthenticationResults
+			out.Timestamp = h.Timestamp
+			if h.Sender != "" {
+				out.Sender = h.Sender
+			}
+			if h.MessageID != "" {
+				out.MessageID = h.MessageID
+			}
+			out.AvailableEvidence = []string{"headers", "body"}
 		}
+	}
+	if len(out.Headers) == 0 {
+		out.Warnings = append(out.Warnings, "MISSING_EMAIL_HEADERS")
+		out.AvailableEvidence = []string{"body"}
 	}
 	total := len(out.Text) + len(out.HTML)
 	if len(m.Attachments) > 32 {

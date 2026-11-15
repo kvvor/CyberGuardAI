@@ -5,8 +5,8 @@ Docker configuration and validation are deferred at the user's request.
 
 ## Run without containers
 
-Set DATABASE_URL in the process environment. .env.example lists recognized
-variables; .env is not automatically loaded. From backend/:
+Set DATABASE_URL in .env.local or the process environment. .env.example lists recognized
+variables; .env.local is loaded as literal data by server and CLI. From backend/:
 
     go run ./cmd/cyberguardctl migrate
     go run ./cmd/cyberguardctl users create --email analyst@example.com --name Analyst
@@ -20,8 +20,7 @@ Proxy /api from Vite, preserving Origin. Exact-origin credentialed CORS is suppo
 ## Authentication
 
 Website registration is optional. Set `PUBLIC_REGISTRATION_ENABLED=true` in the
-process environment and restart to enable it; the default is false. The startup
-scripts load only database URLs from `.env.local`. Public configuration exposes
+local configuration or process environment and restart to enable it; the default is false. Public configuration exposes
 the flag as `public_signup` for frontend registration visibility.
 
 POST /api/v1/auth/register accepts JSON email, display_name, password, and
