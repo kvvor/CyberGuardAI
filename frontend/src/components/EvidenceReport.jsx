@@ -240,7 +240,7 @@ export default function EvidenceReport({ analysis, onExport, onDelete, onUpdated
                   <td>{v.mechanism.toUpperCase()}</td>
                   <td>{v.reported_result === 'unavailable' ? <span className="muted">{t('unavailable')}</span> : <code>{v.reported_result}</code>}</td>
                   <td>
-                    {t(v.trust_status, { defaultValue: v.trust_status })}{v.verification_status !== 'unavailable' && <>, {t(v.verification_status, { defaultValue: v.verification_status })}</>}
+                    {v.trust_status !== 'unavailable' && <>{t(v.trust_status, { defaultValue: v.trust_status })}, {t(v.verification_status, { defaultValue: v.verification_status })}</>}
                     {v.reporting_server && <small>{t('reportedBy')} <code>{v.reporting_server}</code> ({v.evidence_source})</small>}
                     {v.alignment_information && !['unavailable', 'not_reported'].includes(v.alignment_information) && <small><code>{v.alignment_information}</code></small>}
                     {(v.limitations || []).map(l => <small key={l}>{t(l, { defaultValue: l })}</small>)}
