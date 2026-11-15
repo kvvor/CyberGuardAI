@@ -1,11 +1,121 @@
-import EvidenceReport from "../components/EvidenceReport";
-import AttachmentReputation from "../components/AttachmentReputation";
-import {useState} from "react";
-import {useParams,useNavigate} from "react-router-dom";
-import {useTranslation} from "react-i18next";
-import * as Dialog from "@radix-ui/react-dialog";
-import {motion} from "motion/react";
-import {api,downloadReport} from "../services/api";
-import {Badge,ErrorMessage,Resource,useResource} from "../components/common";
-function Values({values}){return <ul>{(values||[]).map((v,i)=><li key={i}>{v}</li>)}</ul>;}
-export default function Details(){const {id}=useParams();const navigate=useNavigate();const {t,i18n}=useTranslation();const resource=useResource(`/analyses/${encodeURIComponent(id)}`);const [lang,setLang]=useState(i18n.language);const [filter,setFilter]=useState("");const [error,setError]=useState("");const [busy,setBusy]=useState(false);const [copied,setCopied]=useState(false);async function run(fn){setBusy(true);setError("");try{await fn();}catch(e){setError(e.code||"error");}finally{setBusy(false);}}async function copy(value){try{await navigator.clipboard.writeText(value);setCopied(true);}catch{setError("error");}}return <><ErrorMessage code={error}/><Resource resource={resource}>{a=>{const r=a.report;if(r.scoring_version==="3.0.0")return <EvidenceReport analysis={a} busy={busy} onExport={format=>run(()=>downloadReport(id,format,i18n.language))} onDelete={()=>{if(window.confirm(t("confirmDelete")))run(async()=>{await api(`/analyses/${encodeURIComponent(id)}`,{method:"DELETE"});navigate("/history");});}}/>;const e=r.email;const local=v=>v?.[i18n.language]||v?.en||t("unavailable");return <><div className="toolbar"><select aria-label={t("language")} value={lang} onChange={e=>setLang(e.target.value)}>{["en","ru","kk"].map(v=><option key={v}>{v}</option>)}</select>{["pdf","json"].map(format=><button key={format} disabled={busy} onClick={()=>run(()=>downloadReport(id,format,lang))}>{t("export")} {format.toUpperCase()}</button>)}<Dialog.Root><Dialog.Trigger asChild><button className="danger">{t("delete")}</button></Dialog.Trigger><Dialog.Portal><Dialog.Overlay className="overlay"/><Dialog.Content className="dialog"><Dialog.Title>{t("delete")}</Dialog.Title><Dialog.Description>{t("confirmDelete")}</Dialog.Description><ErrorMessage code={error}/><div className="toolbar"><Dialog.Close asChild><button>{t("cancel")}</button></Dialog.Close><button className="danger" disabled={busy} onClick={()=>run(async()=>{await api(`/analyses/${encodeURIComponent(id)}`,{method:"DELETE"});navigate("/history");})}>{t("delete")}</button></div></Dialog.Content></Dialog.Portal></Dialog.Root></div><section className="panel verdict-hero"><motion.div initial={{opacity:0}} animate={{opacity:1}} className={`risk-ring ${r.risk_level}`} style={{"--score":`${r.risk_score}%`}}><strong>{r.risk_score}</strong><span>/ 100</span></motion.div><div><Badge value={r.verdict}/> <Badge value={r.risk_level}/><h2>{e.subject||t("unavailable")}</h2><p>{e.sender||t("unavailable")}</p><small>{new Date(a.created_at).toLocaleString(i18n.language)} · {t("legacyReport")} · {t(a.status)}</small><p>{t("legacyReport")}</p><p>{t("heuristic")}</p>{r.manual_review_required&&<div className="notice">{t("manual")}</div>}</div></section><section className="panel"><h3>{t("metadata")}</h3><dl>{["sender","reply_to","recipients","subject","timestamp","message_id","source_type","filename","file_sha256"].map(key=><div key={key}><dt>{t(key,{defaultValue:key})}</dt><dd>{Array.isArray(e[key])?e[key].join(", "):e[key]||t("unavailable")}</dd></div>)}</dl><Values values={e.authentication_results}/><Values values={e.parser_warnings}/></section><section className="panel"><h3>{t("indicators")}</h3>{r.indicators?.length?r.indicators.map(f=><details key={f.id}><summary><Badge value={f.severity}/> {f.type} · {f.description_code}</summary><p>{f.evidence}</p><small>{t("source")}: {f.evidence_source} · {t("method")}: {f.analysis_method} · {t("status")}: {f.status} · {f.id}</small></details>):<p>{t("unavailable")}</p>}</section><section className="panel"><h3>{t("iocs")}</h3><select aria-label={t("iocs")} value={filter} onChange={e=>setFilter(e.target.value)}>{["","url","domain","ip","email","hash","sha256"].map(v=><option key={v} value={v}>{t(v||"all")}</option>)}</select>{copied&&<span role="status">{t("copied")}</span>}<div className="table-scroll"><table><tbody>{r.iocs?.filter(i=>!filter||i.type===filter).map((ioc,index)=><tr key={index}><td>{ioc.type}</td><td><code>{ioc.value}</code><small>{ioc.source}</small></td><td><button onClick={()=>copy(ioc.value)}>{t("copy")}</button><button onClick={()=>copy(ioc.defanged_value)}>{t("defang")}</button></td></tr>)}</tbody></table></div></section><AttachmentReputation report={r}/><section className="panel"><h3>{t("ai")}</h3><Badge value={r.ai_status==="unavailable"?"unavailable_ai":r.ai_status}/><p>{local(a.explanations)}</p>{a.ai_assessment&&<><Badge value={a.ai_assessment.proposed_verdict}/><p>{local(a.ai_assessment.explanations)}</p>{["social_engineering_patterns","supporting_evidence_ids","contradictory_evidence_ids","uncertainty_notes"].map(key=><div key={key}><h4>{t(key)}</h4><Values values={a.ai_assessment[key]}/></div>)}</>}</section><section className="panel"><h3>{t("recommendations")}</h3><p className="preserve">{local(a.recommendations)}</p><h3>{t("limitations")}</h3><Values values={r.limitations}/></section></>;}}</Resource></>;}
+import { useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import { api, downloadReport } from '../services/api';
+import { Badge, ConfirmButton, CopyButton, ErrorMessage, Resource, useResource } from '../components/common';
+import EvidenceReport from '../components/EvidenceReport';
+import AttachmentReputation from '../components/AttachmentReputation';
+import '../i18n/app';
+
+const CURRENT_VERSION = '3.0.0';
+
+function Values({ values }) {
+  const { t } = useTranslation();
+  if (!values?.length) return null;
+  return <ul>{values.map((v, i) => <li key={i}>{t(v, { defaultValue: v })}</li>)}</ul>;
+}
+
+// LegacyReport shows a report stored by the retired rule-weight detector. The
+// stored data is displayed as it was, clearly labelled, without presenting the
+// old score as a probability or as a current verdict.
+function LegacyReport({ analysis, busy, error, onExport, onDelete }) {
+  const { t, i18n } = useTranslation();
+  const [filter, setFilter] = useState('');
+  const r = analysis.report;
+  const e = r.email;
+  const local = v => v?.[i18n.language] || v?.en || '';
+  return (
+    <>
+      <div className="toolbar">
+        <Link to="/history">← {t('backToHistory')}</Link>
+        <span className="spacer" />
+        <button type="button" disabled={busy} onClick={() => onExport('pdf')}>{t('exportPDF')}</button>
+        <button type="button" disabled={busy} onClick={() => onExport('json')}>{t('exportJSON')}</button>
+        <ConfirmButton label={t('deleteReport')} question={t('deleteConfirm')} confirmLabel={t('deleteYes')} disabled={busy} onConfirm={onDelete} />
+      </div>
+      <ErrorMessage error={error} />
+      <section className="panel">
+        <h2>{t('legacyReport')}</h2>
+        <p className="notice">{t('legacyNotice')}</p>
+        <p><Badge value={r.verdict} /> · {t('legacyScore')}: <strong>{r.risk_score ?? 0}</strong></p>
+        <h3>{e.subject || t('notProvided')}</h3>
+        <p>{e.sender || t('notProvided')}</p>
+        <small>{new Date(analysis.created_at).toLocaleString(i18n.language)}</small>
+      </section>
+      <section className="panel">
+        <h3>{t('emailDetails')}</h3>
+        <dl>
+          {['sender', 'reply_to', 'recipients', 'subject', 'message_id', 'source_type', 'filename', 'file_sha256'].map(key => (
+            <div key={key}><dt>{t(key, { defaultValue: key })}</dt><dd>{(Array.isArray(e[key]) ? e[key].join(', ') : e[key]) || t('notProvided')}</dd></div>
+          ))}
+        </dl>
+        <Values values={e.authentication_results} />
+      </section>
+      <section className="panel">
+        <h3>{t('observations')}</h3>
+        {r.indicators?.length ? r.indicators.map(f => (
+          <details key={f.id}>
+            <summary>{t(f.description_code, { defaultValue: f.description_code })}</summary>
+            <p>{f.evidence}</p>
+          </details>
+        )) : <p className="muted">{t('noObservations')}</p>}
+      </section>
+      <section className="panel">
+        <h3>{t('iocExplorer')}</h3>
+        <select aria-label={t('iocType')} value={filter} onChange={ev => setFilter(ev.target.value)}>
+          {['', 'url', 'domain', 'ip', 'email', 'hash', 'sha256'].map(v => <option key={v} value={v}>{t(v === 'email' ? 'email_ioc' : v || 'all')}</option>)}
+        </select>
+        <div className="table-scroll">
+          <table>
+            <tbody>
+              {r.iocs?.filter(i => !filter || i.type === filter).map((ioc, index) => (
+                <tr key={index}>
+                  <td>{ioc.type}</td>
+                  <td><code>{ioc.value}</code><small>{ioc.source}</small></td>
+                  <td><CopyButton value={ioc.defanged_value} label={t('copyDefanged')} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <AttachmentReputation report={r} />
+      <section className="panel">
+        <h3>{t('summary')}</h3>
+        <p className="preserve">{local(analysis.explanations)}</p>
+        <h3>{t('recommendedActions')}</h3>
+        <p className="preserve">{local(analysis.recommendations)}</p>
+        <h3>{t('limitationsTitle')}</h3>
+        <Values values={r.limitations} />
+      </section>
+    </>
+  );
+}
+
+export default function Details() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const { i18n } = useTranslation();
+  const resource = useResource(`/analyses/${encodeURIComponent(id)}`);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function run(fn) {
+    setBusy(true);
+    setError(null);
+    try { await fn(); } catch (e) { setError({ code: e.code || 'error', requestId: e.requestId }); } finally { setBusy(false); }
+  }
+  const onExport = format => run(() => downloadReport(id, format, i18n.language));
+  const onDelete = () => run(async () => {
+    await api(`/analyses/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    navigate('/history');
+  });
+
+  return (
+    <Resource resource={resource}>
+      {analysis => analysis.report.scoring_version === CURRENT_VERSION
+        ? <EvidenceReport analysis={analysis} busy={busy} error={error} onExport={onExport} onDelete={onDelete} onUpdated={resource.set} />
+        : <LegacyReport analysis={analysis} busy={busy} error={error} onExport={onExport} onDelete={onDelete} />}
+    </Resource>
+  );
+}

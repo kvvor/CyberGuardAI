@@ -201,10 +201,15 @@ func (s *Service) Resolve(ctx context.Context, owner string) (Config, *ai.Client
 			return c, nil, e
 		}
 	}
+	return c, s.Client(key, c.Model), nil
+}
+
+// Client builds an OpenAI client for a key with this service's endpoint.
+func (s *Service) Client(key, model string) *ai.Client {
 	if s.ClientFactory != nil {
-		return c, s.ClientFactory(key, c.Model), nil
+		return s.ClientFactory(key, model)
 	}
-	return c, &ai.Client{Key: key, Model: c.Model, BaseURL: s.OpenAIBaseURL}, nil
+	return &ai.Client{Key: key, Model: model, BaseURL: s.OpenAIBaseURL}
 }
 func (s *Service) Tested(ctx context.Context, owner string, c Config, code string) error {
 	status := "credential_validated"

@@ -106,7 +106,7 @@ func (s *Server) Router() http.Handler {
 	s.analysisRoutes(p)
 	p.HandleFunc("/settings/ai-provider", s.providerSettings).Methods("GET", "POST", "DELETE")
 	p.HandleFunc("/settings/ai-provider/test", s.providerTest).Methods("POST")
-	p.HandleFunc("/settings/ai-provider/models", s.providerModels).Methods("GET")
+	p.HandleFunc("/settings/ai-provider/models", s.providerModels).Methods("GET", "POST")
 	p.HandleFunc("/settings/virustotal", s.providerSettings).Methods("GET", "POST", "DELETE")
 	p.HandleFunc("/settings/virustotal/test", s.providerTest).Methods("POST")
 	p.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {

@@ -261,6 +261,20 @@ func TestProviderSettingsWorkflow(t *testing.T) {
 	if models["success"] != true || len(list) != 2 || list[0].(map[string]any)["id"] != "mock-assessment-large" {
 		t.Fatal(models)
 	}
+	// A key that is not saved yet can list models so that the first save
+	// already carries a valid model; the candidate key is not stored.
+	if status, body := b.do("GET", "/settings/ai-provider/models", nil); status != 409 || errorCode(body) != "PROVIDER_NOT_CONFIGURED" {
+		t.Fatal(status, string(body))
+	}
+	if preview := b.object(200, "POST", "/settings/ai-provider/models", map[string]any{"api_key": mockproviders.KeyValid}); preview["success"] != true || len(preview["models"].([]any)) != 2 {
+		t.Fatal(preview)
+	}
+	if preview := b.object(200, "POST", "/settings/ai-provider/models", map[string]any{"api_key": mockproviders.KeyInvalid}); preview["success"] != false || preview["failure_code"] != "PROVIDER_INVALID_CREDENTIALS" {
+		t.Fatal(preview)
+	}
+	if still := b.object(200, "GET", "/settings/ai-provider", nil); still["has_credential"] != false {
+		t.Fatal("candidate key was stored")
+	}
 	// Connection test: metadata only, no inference.
 	result := a.object(200, "POST", "/settings/ai-provider/test", nil)
 	if result["success"] != true || result["inference_performed"] != false || e.openai.Responses.Load() != 0 {

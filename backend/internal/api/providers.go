@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	ai "cyberguard.local/backend/internal/openai"
 	"cyberguard.local/backend/internal/providers"
 	"cyberguard.local/backend/internal/virustotal"
 )
@@ -93,8 +94,11 @@ func (s *Server) providerSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// providerModels lists models available to the saved OpenAI credential. It is
-// a metadata request: no inference, no email content.
+// providerModels lists models available to an OpenAI credential, read live
+// from the provider. GET uses the saved key. POST may carry a key that has not
+// been saved yet, so a model can be chosen before the first save; that key is
+// used for this one metadata request and is not stored. No inference is run
+// and no email content is sent.
 func (s *Server) providerModels(w http.ResponseWriter, r *http.Request) {
 	if !s.allowed("provider", r.RemoteAddr, 30) {
 		w.Header().Set("Retry-After", "60")
@@ -102,17 +106,55 @@ func (s *Server) providerModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := s.providerService().For("openai")
-	c, client, e := p.Resolve(r.Context(), owner(r))
-	if e != nil {
-		s.resolveFailure(w, r, c, e)
-		return
+	var candidate string
+	if r.Method == "POST" {
+		var in struct {
+			Key string `json:"api_key"`
+		}
+		if decode(w, r, &in) != nil {
+			fail(w, r, 400, "INVALID_REQUEST")
+			return
+		}
+		key, err := providers.NormalizeKey(in.Key)
+		if err != nil {
+			fail(w, r, 400, err.Error())
+			return
+		}
+		candidate = key
+	}
+	var client *ai.Client
+	selected := ""
+	if candidate != "" {
+		client = p.Client(candidate, "")
+	} else {
+		c, b, e := p.Read(r.Context(), owner(r))
+		if e != nil {
+			internal(w, r, "provider settings read", e)
+			return
+		}
+		selected = c.Model
+		switch {
+		case c.Source == "operator":
+			client = p.Client(p.FallbackKey, c.Model)
+		case !c.HasCredential:
+			fail(w, r, 409, "PROVIDER_NOT_CONFIGURED")
+			return
+		default:
+			// Listing works for a saved but disabled provider: the user is still configuring it.
+			key, e := p.Open(owner(r), b)
+			if e != nil {
+				s.resolveFailure(w, r, c, e)
+				return
+			}
+			client = p.Client(key, c.Model)
+		}
 	}
 	models, e := client.ListModels(r.Context())
 	if e != nil {
-		JSON(w, 200, map[string]any{"success": false, "failure_code": e.Error(), "models": []any{}, "selected": c.Model})
+		JSON(w, 200, map[string]any{"success": false, "failure_code": e.Error(), "models": []any{}, "selected": selected})
 		return
 	}
-	JSON(w, 200, map[string]any{"success": true, "failure_code": "", "models": models, "selected": c.Model})
+	JSON(w, 200, map[string]any{"success": true, "failure_code": "", "models": models, "selected": selected})
 }
 
 // resolveFailure reports why a saved provider configuration cannot be used.
