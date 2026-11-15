@@ -25,7 +25,7 @@ func TestValidAndRetry(t *testing.T) {
 		if request["store"] != false || request["tools"] != nil || !strings.Contains(request["instructions"].(string), "untrusted") {
 			t.Error("unsafe request")
 		}
-		a := Assessment{Verdict: "inconclusive", AttackTypes: []string{}, Patterns: []string{}, Supporting: []string{}, Contradictory: []string{}, Uncertainty: []string{"limited"}, Explanations: map[string]string{"en": "uncertain", "ru": "неясно", "kk": "белгісіз"}, Recommendations: map[string]string{"en": "review", "ru": "проверить", "kk": "тексеру"}}
+		a := Assessment{Observations: []detection.Observation{}, Verdict: "inconclusive", AttackTypes: []string{}, Patterns: []string{}, Supporting: []string{}, Contradictory: []string{}, Uncertainty: []string{"limited"}, Explanations: map[string]string{"en": "uncertain", "ru": "неясно", "kk": "белгісіз"}, Recommendations: map[string]string{"en": "review", "ru": "проверить", "kk": "тексеру"}}
 		b, _ := json.Marshal(a)
 		json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{map[string]any{"content": []any{map[string]any{"type": "output_text", "text": string(b)}}}}})
 	}))

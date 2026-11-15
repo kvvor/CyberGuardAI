@@ -3,7 +3,7 @@ Set-Location -LiteralPath "D:\AI\CyberGuardAI-backend" -ErrorAction Stop
 $ErrorActionPreference='Stop'
 if (Test-Path -LiteralPath '.env.local') {
     foreach ($line in Get-Content -LiteralPath '.env.local') {
-        if ($line -match '^(DATABASE_URL|TEST_DATABASE_URL)=(.+)$') {
+        if ($line -match '^(DATABASE_URL|TEST_DATABASE_URL|PROVIDER_MASTER_KEY)=(.+)$') {
             [Environment]::SetEnvironmentVariable($Matches[1],$Matches[2],'Process')
         }
     }

@@ -2,6 +2,9 @@
 
 Security, made clear.
 
+Authenticated AI settings, encrypted credential setup, execution statuses and the
+hybrid scoring policy are documented in [AI providers](docs/ai-providers.md).
+
 The Go backend is in [backend/](backend/). It uses Gorilla/mux, PostgreSQL/pgx,
 Argon2id sessions, static email analysis, and consent-gated OpenAI Responses.
 

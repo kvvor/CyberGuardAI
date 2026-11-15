@@ -24,11 +24,15 @@ type Finding struct {
 	Status   string `json:"status"`
 }
 type IOC struct {
-	Type       string `json:"type"`
-	Value      string `json:"value"`
-	Normalized string `json:"normalized_value"`
-	Defanged   string `json:"defanged_value"`
-	Source     string `json:"source"`
+	Category   string   `json:"resource_category"`
+	Original   string   `json:"original_value"`
+	FindingIDs []string `json:"finding_ids"`
+	Suspicion  string   `json:"suspicion_status"`
+	Type       string   `json:"type"`
+	Value      string   `json:"value"`
+	Normalized string   `json:"normalized_value"`
+	Defanged   string   `json:"defanged_value"`
+	Source     string   `json:"source"`
 }
 type Mapping struct {
 	ID       string   `json:"technique_id"`
@@ -64,7 +68,7 @@ func Defang(s string) string {
 	return strings.ReplaceAll(s, "@", "[@]")
 }
 func Analyze(e emailparser.Email) Report {
-	r := Report{Email: e, Verdict: "inconclusive", Level: "low", Version: "1.0.0", AttackTypes: []string{}, Indicators: []Finding{}, IOCs: []IOC{}, MITRE: []Mapping{}, Limitations: []string{"HEURISTIC_NOT_PROBABILITY", "AUTHENTICATION_HEADERS_UNVERIFIED", "NO_REPUTATION_LOOKUP"}, Manual: true, AIStatus: "not_requested"}
+	r := Report{Email: e, Verdict: "inconclusive", Level: "low", Version: "2.0.0", AttackTypes: []string{}, Indicators: []Finding{}, IOCs: []IOC{}, MITRE: []Mapping{}, Limitations: []string{"HEURISTIC_NOT_PROBABILITY", "AUTHENTICATION_HEADERS_UNVERIFIED", "NO_REPUTATION_LOOKUP"}, Manual: true, AIStatus: "not_requested"}
 	r.Limitations = append(r.Limitations, e.Warnings...)
 	add := func(rule, ev, source string, weight int) {
 		if len(r.Indicators) >= 128 {
@@ -156,9 +160,9 @@ func Analyze(e emailparser.Email) Report {
 			return
 		}
 		seen[k] = true
-		r.IOCs = append(r.IOCs, IOC{typ, value, norm, Defang(norm), source})
+		r.IOCs = append(r.IOCs, IOC{Type: typ, Value: value, Normalized: norm, Defanged: Defang(norm), Source: source, Original: value, Category: source, FindingIDs: []string{}, Suspicion: "unassessed"})
 	}
-	links := urls.FindAllString(e.Text+" "+e.HTML, 512)
+	links := urls.FindAllString(e.Text, 512)
 	doc, _ := html.Parse(strings.NewReader(e.HTML))
 	var walk func(*html.Node)
 	visited := 0
@@ -166,6 +170,23 @@ func Analyze(e emailparser.Email) Report {
 		visited++
 		if visited > 10000 {
 			return
+		}
+		if n.Type == html.ElementNode && n.Data != "a" {
+			for _, a := range n.Attr {
+				if a.Key == "src" || a.Key == "href" {
+					if normalized, _, err := NormalizeURL(a.Val); err == nil {
+						ioc("url", normalized, "embedded_resource")
+						for i := range r.IOCs {
+							if r.IOCs[i].Normalized == normalized {
+								r.IOCs[i].Original = a.Val
+								if strings.Contains(strings.ToLower(normalized), "/track") || strings.Contains(strings.ToLower(normalized), "/pixel") || strings.Contains(strings.ToLower(normalized), "/beacon") {
+									r.IOCs[i].Category = "tracking_url"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 		if n.Type == html.ElementNode && n.Data == "a" {
 			href := ""
@@ -177,8 +198,10 @@ func Analyze(e emailparser.Email) Report {
 			if href != "" && len(links) < 512 {
 				links = append(links, href)
 				if n.FirstChild != nil && n.FirstChild.Type == html.TextNode {
-					shown, _ := url.Parse(strings.TrimSpace(n.FirstChild.Data))
-					dest, _ := url.Parse(href)
+					shownURL, _, _ := NormalizeURL(strings.TrimSpace(n.FirstChild.Data))
+					destURL, _, _ := NormalizeURL(href)
+					shown, _ := url.Parse(shownURL)
+					dest, _ := url.Parse(destURL)
 					if shown != nil && dest != nil && shown.Hostname() != "" && !strings.EqualFold(shown.Hostname(), dest.Hostname()) {
 						add("LINK_DESTINATION_MISMATCH", n.FirstChild.Data+" -> "+href, "html", 25)
 					}
@@ -192,16 +215,32 @@ func Analyze(e emailparser.Email) Report {
 	if doc != nil {
 		walk(doc)
 	}
+	actionableSeen := map[string]bool{}
 	for _, raw := range links {
-		u, err := url.Parse(strings.TrimRight(raw, ".,);"))
+		normalized, wrapped, normErr := NormalizeURL(strings.TrimRight(raw, ".,);"))
+		if normErr != nil {
+			continue
+		}
+		u, err := url.Parse(normalized)
 		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			continue
 		}
 		u.Host = strings.ToLower(u.Host)
-		if seen["url"+u.String()] {
+		if actionableSeen[u.String()] {
 			continue
 		}
-		ioc("url", u.String(), "body")
+		actionableSeen[u.String()] = true
+		category := "actionable_hyperlink"
+		if wrapped {
+			category = "security_wrapped"
+		}
+		ioc("url", u.String(), category)
+		for i := range r.IOCs {
+			if r.IOCs[i].Normalized == u.String() {
+				r.IOCs[i].Original = raw
+				r.IOCs[i].Category = category
+			}
+		}
 		if net.ParseIP(u.Hostname()) == nil {
 			ioc("domain", u.Hostname(), "url")
 		}
@@ -209,7 +248,7 @@ func Analyze(e emailparser.Email) Report {
 			ioc("ip", u.Hostname(), "url")
 			add("IP_LINK", raw, "url", 20)
 		}
-		if u.User != nil || strings.Contains(u.Hostname(), "xn--") || len(raw) > 512 {
+		if u.User != nil || strings.Contains(u.Hostname(), "xn--") {
 			add("SUSPICIOUS_URL", raw, "url", 15)
 		}
 	}
@@ -283,6 +322,14 @@ func Analyze(e emailparser.Email) Report {
 					}
 				}
 				r.MITRE = append(r.MITRE, Mapping{"T1566.001", "Spearphishing Attachment", "Initial Access", "suspected", attachmentIDs, "https://attack.mitre.org/techniques/T1566/001/"})
+			}
+		}
+	}
+	for i := range r.IOCs {
+		for _, f := range r.Indicators {
+			if strings.Contains(f.Evidence, r.IOCs[i].Value) || strings.Contains(f.Evidence, r.IOCs[i].Original) {
+				r.IOCs[i].FindingIDs = append(r.IOCs[i].FindingIDs, f.ID)
+				r.IOCs[i].Suspicion = "associated_with_finding"
 			}
 		}
 	}

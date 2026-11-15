@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"cyberguard.local/backend/internal/auth"
+	"cyberguard.local/backend/internal/providers"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,7 @@ import (
 )
 
 type Server struct {
+	ProviderSettings *providers.Service
 	PublicRegistration bool
 	Auth               *auth.Service
 	Origin             string
@@ -83,6 +85,8 @@ func (s *Server) Router() http.Handler {
 	p := r.PathPrefix("/api/v1").Subrouter()
 	p.Use(s.session)
 	s.analysisRoutes(p)
+	p.HandleFunc("/settings/ai-provider", s.providerSettings).Methods("GET", "POST", "DELETE")
+	p.HandleFunc("/settings/ai-provider/test", s.providerTest).Methods("POST")
 	p.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		v := r.Context().Value(key(0)).(auth.Session)
 		if e := s.Auth.Logout(r.Context(), v.Token); e != nil {

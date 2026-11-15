@@ -18,21 +18,22 @@ import (
 	"github.com/jackc/pgx/v5"
 	"io"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
 )
 
 type stored struct {
-	ID              string            `json:"id"`
-	Mode            string            `json:"mode"`
-	Created         time.Time         `json:"created_at"`
-	Report          detection.Report  `json:"report"`
-	AI              *ai.Assessment    `json:"ai_assessment,omitempty"`
-	Status          string            `json:"status"`
-	Explanations    map[string]string `json:"explanations"`
-	Recommendations map[string]string `json:"recommendations"`
+	AIExecution     AIExecution         `json:"ai_execution"`
+	TopFindings     []detection.Finding `json:"top_findings"`
+	ID              string              `json:"id"`
+	Mode            string              `json:"mode"`
+	Created         time.Time           `json:"created_at"`
+	Report          detection.Report    `json:"report"`
+	AI              *ai.Assessment      `json:"ai_assessment,omitempty"`
+	Status          string              `json:"status"`
+	Explanations    map[string]string   `json:"explanations"`
+	Recommendations map[string]string   `json:"recommendations"`
 }
 
 func (s *Server) analysisRoutes(p *mux.Router) {
@@ -49,6 +50,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var e emailparser.Email
 	var err error
 	consent := false
+	requested := false
 	demoID := ""
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if err = r.ParseMultipartForm(1 << 20); err != nil {
@@ -57,6 +59,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		}
 		defer r.MultipartForm.RemoveAll()
 		consent = r.FormValue("external_processing_consent") == "true"
+		requested = r.FormValue("ai_requested") == "true" || consent
 		f, h, x := r.FormFile("file")
 		if x != nil {
 			fail(w, r, 400, "INVALID_UPLOAD")
@@ -79,12 +82,13 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			Source  string `json:"source_type"`
-			Text    string `json:"text"`
-			Sender  string `json:"sender"`
-			Subject string `json:"subject"`
-			Consent bool   `json:"external_processing_consent"`
-			DemoID  string `json:"demo_sample_id"`
+			Source      string `json:"source_type"`
+			Text        string `json:"text"`
+			Sender      string `json:"sender"`
+			Subject     string `json:"subject"`
+			Consent     bool   `json:"external_processing_consent"`
+			AIRequested *bool  `json:"ai_requested"`
+			DemoID      string `json:"demo_sample_id"`
 		}
 		d := json.NewDecoder(r.Body)
 		d.DisallowUnknownFields()
@@ -98,6 +102,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		}
 		e, err = emailparser.Parse([]byte(in.Text), "", "paste", in.Sender, in.Subject)
 		consent = in.Consent
+		requested = consent
+		if in.AIRequested != nil {
+			requested = *in.AIRequested
+		}
 		if in.Source == "demo" {
 			demoID = in.DemoID
 			if demoID == "" {
@@ -121,22 +129,24 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		}
 		mode = "demo"
 		e = report.Email
-	} else if consent {
-		client := ai.Client{Key: os.Getenv("OPENAI_API_KEY"), Model: os.Getenv("OPENAI_MODEL")}
-		a, x := client.Assess(r.Context(), report)
-		if x != nil {
-			report.AIStatus = "unavailable"
-			report.Limitations = append(report.Limitations, "OPENAI_UNAVAILABLE")
-		} else {
-			assessment = &a
-			report.AIStatus = "completed"
-			detection.ApplyContext(&report, a.Verdict, a.Supporting, a.Contradictory)
+	}
+	execution := AIExecution{Status: "not_requested", StaticVerdict: report.Verdict, StaticScore: report.Score, Final: report.Verdict, Influence: "STATIC_ONLY"}
+	if mode != "demo" {
+		execution, assessment = s.executeAI(r.Context(), owner(r), requested, consent, &report)
+		report.AIStatus = execution.Status
+		if execution.Failure != "" {
+			report.Limitations = append(report.Limitations, execution.Failure)
 		}
 	}
 	report.Email.Text = ""
 	report.Email.HTML = ""
 	report.Email.Headers = nil
 	row := stored{ID: uuid.NewString(), Mode: mode, Created: time.Now().UTC(), Report: report, AI: assessment}
+	row.AIExecution = execution
+	row.TopFindings = report.Indicators
+	if len(row.TopFindings) > 5 {
+		row.TopFindings = row.TopFindings[:5]
+	}
 	row.Status = "partial"
 	if mode == "demo" || assessment != nil {
 		row.Status = "complete"
@@ -349,6 +359,11 @@ func pdfReport(row stored, lang string) ([]byte, error) {
 	line := func(s string) { p.MultiCell(180, 6, s, "", "", false) }
 	line("CyberGuard AI — Security, made clear.")
 	line(title)
+	line("AI: " + row.AIExecution.Status + " / " + row.AIExecution.Provider + " / " + row.AIExecution.Model)
+	if row.AIExecution.Failure != "" {
+		line(row.AIExecution.Failure)
+	}
+	line(row.AIExecution.Influence)
 	label := func(key string) string { return reports.Label(lang, key) }
 	if row.Mode == "demo" {
 		line(label("synthetic"))
