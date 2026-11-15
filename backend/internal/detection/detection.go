@@ -44,16 +44,18 @@ type Mapping struct {
 	URL      string   `json:"official_url"`
 }
 type Report struct {
+	Evidence             []Evidence          `json:"evidence,omitempty"`
+	Authentication       []Authentication    `json:"authentication,omitempty"`
 	AttachmentReputation []virustotal.Result `json:"attachment_reputation,omitempty"`
 	VirusTotalStatus     string              `json:"virustotal_status,omitempty"`
 	Verdict              string              `json:"verdict"`
-	Score                int                 `json:"risk_score"`
+	Score                int                 `json:"risk_score,omitempty"`
 	Level                string              `json:"risk_level"`
 	Version              string              `json:"scoring_version"`
 	AttackTypes          []string            `json:"attack_types"`
 	Indicators           []Finding           `json:"indicators"`
 	IOCs                 []IOC               `json:"iocs"`
-	MITRE                []Mapping           `json:"mitre_mappings"`
+	MITRE                []Mapping           `json:"mitre_mappings,omitempty"`
 	Limitations          []string            `json:"limitations"`
 	Manual               bool                `json:"manual_review_required"`
 	Email                emailparser.Email   `json:"email"`

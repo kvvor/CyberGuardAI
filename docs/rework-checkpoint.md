@@ -46,3 +46,17 @@ are authorized by this implementation workflow.
 Not a completed full rework: legacy classification, demo, MITRE, authentication
 evidence redesign, Windows scripts and large attachment batch scheduling remain.
 See virustotal.md for provider scope and licensing constraints.
+
+## Verified live verdict increment
+
+Live analysis now calls PrepareEvidence and uses validated OpenAI verdict directly;
+Hybrid is no longer authoritative. Model input excludes legacy scores and keyword
+judgments. Added explicit untrusted authentication evidence, stable evidence IDs,
+HTML text sanitization and bounded body truncation. Failed/missing AI produces no
+ai_assessment or final_verdict. Added qualitative severity/confidence and compact
+new report UI with IOC search/pagination. See evidence-pipeline.md for limitations.
+
+PostgreSQL/backend tests and all 44 frontend tests, lint and build pass. Updated an
+old integration assertion that expected phishing without any model execution.
+Semantic validation of arbitrary model prose, complete feature removal, queued VT
+batches, dashboard failure aggregation and Windows portability are still pending.

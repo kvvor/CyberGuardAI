@@ -161,6 +161,10 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	for _, lang := range []string{"en", "ru", "kk"} {
 		row.Explanations[lang], row.Recommendations[lang] = detection.Narrative(lang)
 	}
+	if mode == "live" && assessment == nil {
+		row.Explanations = map[string]string{"en": "AI assessment was not completed. Review the provider execution status and extracted evidence.", "ru": "Анализ ИИ не завершён. Проверьте состояние провайдера и извлечённые данные.", "kk": "ЖИ талдауы аяқталмады. Провайдер күйін және алынған деректерді тексеріңіз."}
+		row.Recommendations = map[string]string{}
+	}
 	if assessment != nil {
 		row.Explanations = assessment.Explanations
 		row.Recommendations = assessment.Recommendations
@@ -378,14 +382,37 @@ func pdfReport(row stored, lang string) ([]byte, error) {
 	line(label("subject") + ": " + row.Report.Email.Subject)
 	line(label("sender") + ": " + row.Report.Email.Sender)
 	line(label("verdict") + ": " + label(row.Report.Verdict))
-	line(label("risk") + ": " + fmt.Sprintf("%d / %s", row.Report.Score, label(row.Report.Level)))
+	if row.Report.Version != "3.0.0" {
+		line(label("risk") + ": " + fmt.Sprintf("%d / %s", row.Report.Score, label(row.Report.Level)))
+	} else if row.AI != nil {
+		line(label(row.AI.Severity) + " / " + label(row.AI.Confidence))
+	}
 	explanation, recommendation := detection.Narrative(lang)
+	if row.Report.Version == "3.0.0" {
+		explanation = row.Explanations[lang]
+		recommendation = row.Recommendations[lang]
+	}
 	if row.AI != nil {
 		explanation = row.AI.Explanations[lang]
 		recommendation = row.AI.Recommendations[lang]
 	}
 	line(label("explanation") + ": " + explanation)
 	line(label("recommendations") + ": " + recommendation)
+	for _, a := range row.Report.Authentication {
+		line(a.Mechanism + ": " + a.Result + " / " + a.Trust + " / " + a.Verification)
+	}
+	if row.AI != nil {
+		for _, id := range row.AI.Supporting {
+			for _, e := range row.Report.Evidence {
+				if e.ID == id {
+					line(id + ": " + e.Value)
+				}
+			}
+		}
+		for _, o := range row.AI.Observations {
+			line(o.Quote + " — " + o.Reason)
+		}
+	}
 	line(label("indicators"))
 	for _, f := range row.Report.Indicators {
 		line(f.Code + ": " + f.Evidence)

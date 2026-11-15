@@ -516,6 +516,8 @@ components:
     AIAssessment:
       type: object
       properties:
+        severity: {type: string, enum: [none, low, medium, high, critical]}
+        confidence: {type: string, enum: [low, medium, high], description: 'Qualitative model confidence, not a calibrated probability'}
         contextual_findings: {type: array, items: {$ref: '#/components/schemas/ContextualFinding'}}
         proposed_verdict: {type: string, enum: [legitimate, suspicious, phishing, inconclusive]}
         suspected_attack_types: {type: array, items: {type: string}}

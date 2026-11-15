@@ -25,7 +25,7 @@ func TestValidAndRetry(t *testing.T) {
 		if request["store"] != false || request["tools"] != nil || !strings.Contains(request["instructions"].(string), "untrusted") {
 			t.Error("unsafe request")
 		}
-		a := Assessment{Observations: []detection.Observation{}, Verdict: "inconclusive", AttackTypes: []string{}, Patterns: []string{}, Supporting: []string{}, Contradictory: []string{}, Uncertainty: []string{"limited"}, Explanations: map[string]string{"en": "uncertain", "ru": "неясно", "kk": "белгісіз"}, Recommendations: map[string]string{"en": "review", "ru": "проверить", "kk": "тексеру"}}
+		a := Assessment{Severity: "low", Confidence: "low", Observations: []detection.Observation{}, Verdict: "inconclusive", AttackTypes: []string{}, Patterns: []string{}, Supporting: []string{}, Contradictory: []string{}, Uncertainty: []string{"limited"}, Explanations: map[string]string{"en": "uncertain", "ru": "неясно", "kk": "белгісіз"}, Recommendations: map[string]string{"en": "review", "ru": "проверить", "kk": "тексеру"}}
 		b, _ := json.Marshal(a)
 		json.NewEncoder(w).Encode(map[string]any{"status": "completed", "output": []any{map[string]any{"content": []any{map[string]any{"type": "output_text", "text": string(b)}}}}})
 	}))
@@ -46,4 +46,13 @@ func TestFailures(t *testing.T) {
 		}
 		ts.Close()
 	}
+}
+
+func TestEvidenceValidation(t *testing.T) {
+	r:=detection.Report{Evidence:[]detection.Evidence{{ID:"sender-1",Value:"sender@example.test"}}}
+	a:=Assessment{Verdict:"suspicious",Severity:"medium",Confidence:"high",Supporting:[]string{"sender-1"},Explanations:map[string]string{"en":"Review sender","ru":"Проверьте отправителя","kk":"Жіберушіні тексеріңіз"},Recommendations:map[string]string{"en":"Verify","ru":"Проверьте","kk":"Тексеріңіз"}}
+	if err:=validate(a,r);err!=nil{t.Fatal(err)}
+	a.Supporting=[]string{"invented"};if validate(a,r)==nil{t.Fatal("invented evidence accepted")}
+	a.Supporting=nil;if validate(a,r)==nil{t.Fatal("ungrounded verdict accepted")}
+	a.Supporting=[]string{"sender-1"};a.Severity="85%";if validate(a,r)==nil{t.Fatal("invalid severity accepted")}
 }

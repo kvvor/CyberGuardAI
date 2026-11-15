@@ -128,7 +128,7 @@ func TestPostgresHTTPWorkflow(t *testing.T) {
 	}
 	raw := request(a, "POST", "/analyses", csrf, map[string]any{"source_type": "paste", "sender": "CEO <ceo@example.com>", "text": "Urgent: verify your password immediately at https://192.0.2.1/login"}, 201)
 	var report stored
-	if json.Unmarshal(raw, &report) != nil || report.ID == "" || report.Report.Verdict != "phishing" {
+	if json.Unmarshal(raw, &report) != nil || report.ID == "" || report.Report.Verdict != "inconclusive" || report.Status != "partial" || report.AI != nil || report.AIExecution.Final != "" || report.Report.Score != 0 {
 		t.Fatal("analysis failed")
 	}
 	request(a, "GET", "/analyses/"+report.ID, "", nil, 200)
