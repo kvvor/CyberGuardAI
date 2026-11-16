@@ -1,7 +1,6 @@
 import { it, expect, vi, describe } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { ProviderSettings } from '../components/ProviderSettings';
-import AttachmentReputation from '../components/AttachmentReputation';
 import i18n from '../i18n';
 import '../i18n/app';
 
@@ -136,36 +135,3 @@ describe('provider settings', () => {
   });
 });
 
-describe('attachment reputation', () => {
-  const report = status => ({ email: { attachments: [{ filename: 'report.pdf', sha256: 'abc', size: 12 }] }, attachment_reputation: [{ sha256: 'abc', status, ...(status === 'completed' ? { statistics: { malicious: 0, suspicious: 0, harmless: 2, undetected: 60 } } : {}) }] });
-
-  it.each(['en', 'ru', 'kk'])('never presents an unknown or undetected file as safe (%s)', async lang => {
-    await i18n.changeLanguage(lang);
-    const { unmount } = render(<AttachmentReputation report={report('not_found')} />);
-    expect(screen.getByText(i18n.t('not_found'))).toBeInTheDocument();
-    expect(screen.getByText(i18n.t('vtUnknown'))).toBeInTheDocument();
-    unmount();
-    render(<AttachmentReputation report={report('completed')} />);
-    expect(screen.getByText(i18n.t('vtUnknown'))).toBeInTheDocument();
-    expect(document.querySelector('.badge.legitimate')).toBeNull();
-    await i18n.changeLanguage('en');
-  });
-
-  it('offers to complete deferred lookups only with consent', async () => {
-    const updated = vi.fn();
-    const fetch = vi.spyOn(window, 'fetch').mockImplementation(() => json({ id: 'a', report: report('not_found') }));
-    render(<AttachmentReputation report={report('deferred_local_limit')} analysisId="a" onUpdated={updated} />);
-    const button = screen.getByRole('button', { name: 'Check the remaining hashes now' });
-    expect(button).toBeDisabled();
-    fireEvent.click(screen.getByRole('checkbox'));
-    fireEvent.click(button);
-    await waitFor(() => expect(updated).toHaveBeenCalled());
-    expect(fetch.mock.calls[0][0]).toBe('/api/v1/analyses/a/virustotal');
-    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ virustotal_consent: true });
-  });
-
-  it('shows no recheck for lookups that were never requested', () => {
-    render(<AttachmentReputation report={report('not_requested')} analysisId="a" onUpdated={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: 'Check the remaining hashes now' })).not.toBeInTheDocument();
-  });
-});

@@ -79,7 +79,7 @@ function LegacyReport({ analysis, busy, error, onExport, onDelete }) {
           </table>
         </div>
       </section>
-      <AttachmentReputation report={r} />
+      {(e.attachments || []).length > 0 && <section className="panel"><h3>{t('attachmentsTitle')}</h3><AttachmentReputation report={r} /></section>}
       <section className="panel">
         <h3>{t('summary')}</h3>
         <p className="preserve">{local(analysis.explanations)}</p>

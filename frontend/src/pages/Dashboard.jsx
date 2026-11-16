@@ -8,6 +8,10 @@ import '../i18n/app';
 
 const CURRENT_VERSION = '3.0.0';
 
+// Chart bars grow in once when data arrives, unless the user asked the system
+// to reduce motion.
+const reducedMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+
 // One row per stored analysis. A verdict is shown only for a validated
 // assessment; incomplete and historical reports are labelled as such.
 export function AnalysisTable({ items = [], emptyMessage }) {
@@ -53,7 +57,7 @@ function Chart({ title, data }) {
   const { t } = useTranslation();
   const hasData = data?.some(d => d.count > 0);
   return (
-    <section className="panel">
+    <section className="panel chart enter">
       <h3>{t(title)}</h3>
       {hasData ? (
         <ResponsiveContainer width="100%" height={220}>
@@ -61,7 +65,7 @@ function Chart({ title, data }) {
             <XAxis dataKey="name" tick={{ fill: 'var(--muted)', fontSize: 11 }} />
             <YAxis allowDecimals={false} tick={{ fill: 'var(--muted)' }} />
             <Tooltip contentStyle={{ background: 'var(--surface)', borderColor: 'var(--border)' }} />
-            <Bar dataKey="count" name={t('count')} fill="#22b8cf" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="count" name={t('count')} fill="#22b8cf" radius={[4, 4, 0, 0]} isAnimationActive={!reducedMotion()} animationDuration={500} animationEasing="ease-out" />
           </BarChart>
         </ResponsiveContainer>
       ) : <p className="muted">{t('noData')}</p>}
@@ -94,7 +98,7 @@ export default function Dashboard() {
           <>
             <div className="stats">
               {cards(d).map(([key, value]) => (
-                <div className="panel" key={key}><span>{t(key)}</span><strong>{value ?? 0}</strong></div>
+                <div className="panel stat enter" key={key}><span>{t(key)}</span><strong>{value ?? 0}</strong></div>
               ))}
             </div>
             <p className="muted">{t('dashboardNote')}</p>

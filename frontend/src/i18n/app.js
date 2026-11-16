@@ -2,6 +2,7 @@
 // history and every backend error code. Each entry is [English, Russian, Kazakh].
 import i18n from './index';
 import './extra';
+import { uiMessages } from './ui';
 
 const messages = {
   // Errors returned by the backend or raised by the API client.
@@ -158,8 +159,6 @@ const messages = {
   duration: ['{{seconds}} s', '{{seconds}} с', '{{seconds}} с'],
   reason: ['Reason', 'Причина', 'Себебі'],
   supportingEvidence: ['Evidence supporting the verdict', 'Данные, подтверждающие вердикт', 'Қорытындыны растайтын деректер'],
-  contradictoryEvidence: ['Evidence pointing the other way', 'Данные, указывающие на обратное', 'Керісінше көрсететін деректер'],
-  noContradictory: ['The model found no contradicting evidence.', 'Модель не нашла противоречащих данных.', 'Модель қайшы деректер таппады.'],
   quotedText: ['Quoted from the email', 'Цитата из письма', 'Хаттан дәйексөз'],
   modelInterpretation: ['The quote was checked against the email; the interpretation is the model’s.', 'Цитата сверена с письмом; интерпретация принадлежит модели.', 'Дәйексөз хатпен салыстырылды; түсіндірме модельдікі.'],
   authentication: ['Email authentication', 'Аутентификация письма', 'Хат аутентификациясы'],
@@ -331,6 +330,7 @@ const messages = {
   suspected_malware_delivery: ['Suspected malware delivery', 'Предполагаемая доставка вредоносного ПО', 'Зиянды БҚ жеткізу күдігі'],
   other: ['Other', 'Другое', 'Басқа'],
   unknown: ['Unknown', 'Неизвестно', 'Белгісіз'],
+  ...uiMessages,
 };
 
 for (const [index, lang] of ['en', 'ru', 'kk'].entries()) {

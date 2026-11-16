@@ -112,17 +112,18 @@ function ProviderForm({ provider, config, onSaved }) {
       </label>
 
       {provider === 'openai' && (
-        <div className="field-group">
-          <label>
-            {t('providerModel')}
+        <div className="field">
+          <label htmlFor="openai-model">{t('providerModel')}</label>
+          {/* Input and button share one row and one height; the hint sits below both. */}
+          <div className="control-row">
             {models && inList
-              ? <select value={model} disabled={Boolean(busy)} onChange={e => setModel(e.target.value)}>{models.map(m => <option key={m.id} value={m.id}>{m.id}</option>)}</select>
-              : <input list="openai-models" value={model} maxLength={128} spellCheck={false} autoComplete="off" disabled={Boolean(busy)} onChange={e => setModel(e.target.value)} />}
+              ? <select id="openai-model" value={model} disabled={Boolean(busy)} onChange={e => setModel(e.target.value)}>{models.map(m => <option key={m.id} value={m.id}>{m.id}</option>)}</select>
+              : <input id="openai-model" list="openai-models" value={model} maxLength={128} spellCheck={false} autoComplete="off" disabled={Boolean(busy)} onChange={e => setModel(e.target.value)} />}
             {models && !inList && <datalist id="openai-models">{models.map(m => <option key={m.id} value={m.id} />)}</datalist>}
-            <small>{models ? t('providerModelsLoaded', { n: models.length }) : t(canList ? 'providerModelHint' : 'providerModelsNeedKey')}</small>
-          </label>
-          <button type="button" disabled={Boolean(busy) || !canList} onClick={loadModels}>{busy === 'models' ? t('loading') : t('providerLoadModels')}</button>
-          {models && inList && <button type="button" className="small" disabled={Boolean(busy)} onClick={() => setModels(null)}>✎</button>}
+            {models && inList && <button type="button" disabled={Boolean(busy)} aria-label={t('providerModelManual')} title={t('providerModelManual')} onClick={() => setModels(null)}>✎</button>}
+            <button type="button" disabled={Boolean(busy) || !canList} onClick={loadModels}>{busy === 'models' ? t('loading') : t('providerLoadModels')}</button>
+          </div>
+          <small>{models ? t('providerModelsLoaded', { n: models.length }) : t(canList ? 'providerModelHint' : 'providerModelsNeedKey')}</small>
         </div>
       )}
 

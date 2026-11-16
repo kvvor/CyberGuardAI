@@ -78,6 +78,8 @@ export function ConfirmButton({ label, question, confirmLabel, onConfirm, disabl
   );
 }
 
+// CopyButton copies the value it is given. Callers pass the defanged form of
+// links and addresses, so what lands on the clipboard is never clickable.
 export function CopyButton({ value, label }) {
   const { t } = useTranslation();
   const [state, setState] = useState('');
@@ -90,7 +92,11 @@ export function CopyButton({ value, label }) {
     }
     setTimeout(() => setState(''), 2000);
   }
-  return <button type="button" className="small" onClick={copy}>{state === 'copied' ? t('copied') : state === 'error' ? t('error') : label}</button>;
+  return (
+    <button type="button" className="small" title={t('copySafeHint')} onClick={copy}>
+      <span aria-live="polite">{state === 'copied' ? t('copiedSafe') : state === 'error' ? t('error') : label}</span>
+    </button>
+  );
 }
 
 export function Preferences() {

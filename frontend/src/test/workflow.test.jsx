@@ -45,7 +45,7 @@ describe('email analyzer', () => {
     expect(screen.getByLabelText(/Send the extracted evidence/)).toBeDisabled();
     expect(screen.getByLabelText(/Look up the SHA-256 hashes/)).toBeDisabled();
     expect(screen.getByText(/no verdict/)).toBeInTheDocument();
-    expect(screen.getAllByRole('link', { name: 'Open Settings' })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: 'Open Settings' })).toHaveLength(3);
   });
 
   it('uploads an EML with separate, explicit consents and opens the stored report', async () => {
@@ -84,13 +84,92 @@ describe('email analyzer', () => {
     fireEvent.click(screen.getByLabelText(/Send the extracted evidence/));
     fireEvent.click(screen.getByRole('button', { name: 'Analyze email' }));
     const progress = await screen.findByRole('status');
-    expect(progress).toHaveTextContent('Analysis in progress');
-    expect(progress).toHaveTextContent('Assessment by OpenAI and validation of the answer');
-    expect(progress).toHaveTextContent('Look up attachment hashes at VirusTotal — skipped');
+    expect(progress).toHaveAttribute('aria-busy', 'true');
+    expect(progress).toHaveTextContent('Analysing the email');
+    // All five activities are listed for orientation; none is marked done and
+    // there is no percentage, because the page cannot observe the server.
+    expect([...progress.querySelectorAll('.progress-steps li')].map(li => li.textContent)).toEqual([
+      'Preparing the email', 'Extracting technical evidence', 'Checking attachment hashes at VirusTotal — not requested', 'Waiting for the AI assessment', 'Preparing the results',
+    ]);
+    expect(progress).toHaveTextContent('the page cannot see which one is running');
+    expect(progress.textContent).not.toMatch(/\d+\s?%|done|completed|✓/i);
+    expect(progress.querySelector('progress, [role=progressbar]')).toBeNull();
+    expect(progress).toHaveTextContent('Elapsed: 0 s');
+    // No second submission is possible while the request is running.
+    expect(screen.queryByRole('button', { name: 'Analyze email' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Email content')).toBeDisabled();
     expect(screen.queryByText('report opened')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(await screen.findByRole('button', { name: 'Analyze email' })).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status', { busy: true })).not.toBeInTheDocument();
+  });
+
+  it('leaves the loading state and reports a timeout or provider failure cleanly', async () => {
+    let attempt = 0;
+    const fetch = mockBackend({ openai: configured(), analyse: () => (++attempt === 1 ? Promise.reject(new DOMException('timeout', 'AbortError')) : json({ error: { code: 'REQUEST_TIMEOUT' } }, 504)) });
+    analyzer();
+    await screen.findByText('model-x');
+    fireEvent.click(screen.getByRole('tab', { name: 'Paste email' }));
+    fireEvent.change(screen.getByLabelText('Email content'), { target: { value: 'text' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze email' }));
+    // An aborted request that the user did not cancel is not silently ignored twice.
+    await screen.findByRole('button', { name: 'Analyze email' });
+    fireEvent.change(screen.getByLabelText('Email content'), { target: { value: 'text' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze email' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('took too long');
+    expect(screen.getByRole('button', { name: 'Analyze email' })).toBeEnabled();
+    expect(fetch.mock.calls.filter(([url, o]) => o?.method === 'POST' && url.endsWith('/analyses'))).toHaveLength(2);
+  });
+
+  it.each(['eml', 'msg'])('shows the selected %s file as ready and supports replace and remove', async extension => {
+    const fetch = mockBackend({});
+    analyzer();
+    const picker = screen.getByLabelText('Upload email');
+    expect(screen.getByText('No file selected')).toBeInTheDocument();
+    expect(screen.getByText('Choose file')).toBeInTheDocument();
+    fireEvent.change(picker, { target: { files: [new File(['x'.repeat(3072)], `first.${extension}`)] } });
+    const selected = screen.getByRole('status');
+    expect(selected).toHaveTextContent(`first.${extension}`);
+    expect(selected).toHaveTextContent('3.0 KB');
+    expect(selected).toHaveTextContent('Ready to analyze');
+    expect(screen.queryByText('No file selected')).not.toBeInTheDocument();
+    // Replace through the picker.
+    expect(screen.getByText('Choose another file')).toBeInTheDocument();
+    fireEvent.change(picker, { target: { files: [new File(['y'], `second.${extension}`)] } });
+    expect(screen.getByRole('status')).toHaveTextContent(`second.${extension}`);
+    expect(screen.queryByText(`first.${extension}`)).not.toBeInTheDocument();
+    // Switching to Paste and back keeps what the page says is selected.
+    fireEvent.click(screen.getByRole('tab', { name: 'Paste email' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Upload email' }));
+    expect(screen.getByRole('status')).toHaveTextContent(`second.${extension}`);
+    // An invalid replacement clears the selection instead of keeping a stale one.
+    fireEvent.change(screen.getByLabelText('Upload email'), { target: { files: [new File(['z'], 'notes.txt')] } });
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose an EML or MSG');
+    expect(screen.getByText('No file selected')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Upload email'), { target: { files: [new File(['y'], `third.${extension}`)] } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    // Remove.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove file' }));
+    expect(screen.getByText('No file selected')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze email' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose an EML or MSG');
+    expect(posted(fetch)).toBeUndefined();
+  });
+
+  it('shows a dropped file exactly like a browsed one and uploads it', async () => {
+    const fetch = mockBackend({});
+    analyzer();
+    const zone = document.querySelector('.dropzone');
+    fireEvent.dragOver(zone);
+    expect(zone.className).toContain('dragging');
+    fireEvent.drop(zone, { dataTransfer: { files: [new File(['From: a@example.test\r\n\r\nx'], 'dropped.eml')] } });
+    expect(zone.className).not.toContain('dragging');
+    expect(screen.getByRole('status')).toHaveTextContent('dropped.eml');
+    expect(screen.getByRole('status')).toHaveTextContent('Ready to analyze');
+    fireEvent.click(screen.getByRole('button', { name: 'Analyze email' }));
+    expect(await screen.findByText('report opened')).toBeInTheDocument();
+    expect(posted(fetch)[1].body.get('file').name).toBe('dropped.eml');
   });
 
   it.each([

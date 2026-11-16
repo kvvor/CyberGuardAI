@@ -7,6 +7,7 @@ import {ShieldCheck,LayoutDashboard,ScanLine,History as HistoryIcon,Settings,Boo
 import "./i18n";
 import "./i18n/extra";
 import "./styles.css";
+import "./report.css";
 import {AuthProvider,useAuth} from "./contexts/Auth";
 import {ErrorMessage,Loading,Preferences} from "./components/common";
 import AuthPage,{PasswordForm} from "./pages/Auth";
