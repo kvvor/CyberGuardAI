@@ -60,6 +60,21 @@ distinct attachments therefore needs one manual re-check per additional four.
 The same key used by other tools also consumes VirusTotal's own quota; in that
 case VirusTotal answers 429 and the status is `rate_limited`.
 
+## Manual hash lookup
+
+On the Analyzer page, "Check a file hash at VirusTotal" looks up one SHA-256
+that the user types in (`POST /reputation/virustotal` with `{"sha256": ...}`).
+It is meant for hashes obtained elsewhere, without handling the file itself.
+
+- exactly 64 hexadecimal characters, checked in the browser and on the server
+  before any provider call;
+- one press, one lookup; nothing is repeated automatically and nothing is stored;
+- same saved key, CSRF and session checks, and the same per-user allowance as
+  attachment lookups;
+- the answer is VirusTotal's existing report for that hash. It is not a scan of
+  file contents, "not found" and zero detections do not prove safety, and the
+  data can be incomplete or outdated. The interface says so with every result.
+
 ## Licence limits
 
 VirusTotal's [Public API](https://docs.virustotal.com/reference/public-vs-premium-api)

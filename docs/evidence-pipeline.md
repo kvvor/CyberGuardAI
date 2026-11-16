@@ -28,6 +28,21 @@ upload / paste -> parser -> evidence engine -> VirusTotal (hashes, consent)
 Limits: 10 MB input, 20 MB decoded, MIME depth 12, 128 parts, 32 attachments,
 bounded MSG reads with a time limit. Attachments are hashed, never executed.
 
+### Header decoding and sender fields
+
+Encoded words (RFC 2047) in Subject, From, Reply-To, recipients and attachment
+names are decoded for reading, including common damaged forms such as base64
+with wrong padding. Decoding never normalises characters, so look-alike letters
+stay exactly as sent. A word that cannot be decoded is left as received. When
+the readable value differs from the header, the original is kept in
+`subject_raw` / `sender_raw` and shown under Technical details.
+
+`sender_name` (the display name) and `sender_address` (the actual address) are
+stored separately. The address is taken from the raw header, so decoding the
+name can never change it. The display name is free text chosen by the sender;
+the report labels both fields and says so. Incoming subject and body are never
+translated.
+
 ## 2. Evidence (`internal/detection`)
 
 The engine records facts. It assigns no scores, has no keyword rules and no
@@ -36,7 +51,9 @@ brand lists. Every observation has status `observed_not_a_verdict`.
 Observations: Reply-To or Return-Path on another domain, punycode sender or
 link host, a display name showing a different address, a header reporting an
 authentication failure, a link to an IP address, a URL with a user-name part,
-visible link text showing a different host than the destination, HTML forms,
+visible link text showing a different host than the destination, a display
+name that shows another address or domain or mixes alphabets inside one word,
+device configuration profiles (`.mobileconfig` and similar), HTML forms,
 script references, executable attachment types, an executable named like a
 document (`invoice.pdf.exe`; ordinary names such as `report.v2.final.pdf` are
 not flagged), macro-capable documents, archives, HTML attachments, content that
@@ -68,6 +85,14 @@ verification or DMARC alignment. It reports what the uploaded headers claim:
 | `verification_status` | `unable_to_verify`, `unavailable` (`verified` is reserved and never produced today) |
 | `alignment_information` | properties the header reported (`header.from`, `smtp.mailfrom`, `header.d`) or `not_reported` |
 
+Headers are parsed per method: each result keeps only the properties written
+in its own segment, comments are ignored for parsing, and the complete header
+is kept in `raw_value`. A header without a reporting server (Microsoft 365
+starts directly with `spf=pass ...`) is accepted; a method name is never taken
+for a server name. `bestguesspass` (Microsoft's value for a domain without a
+DMARC policy) is recorded as reported, carries its own limitation and is never
+counted as a DMARC pass.
+
 `trusted_reported` is used only for the topmost `Authentication-Results`
 header whose authserv-id is listed in `TRUSTED_AUTHSERV_IDS`. Without that
 setting every result is untrusted, because uploaded headers can be forged.
@@ -97,6 +122,8 @@ A response becomes a verdict only if all of this holds:
 - every `evidence_ids` entry exists in the evidence list; the same item cannot
   both support and contradict;
 - every quote occurs verbatim in the part it claims to come from;
+- every quote explanation and uncertainty note is present in English, Russian
+  and Kazakh (a response with text in only one language is discarded);
 - a verdict other than `inconclusive` cites at least one item or quote;
 - **authentication claims** do not exceed what was reported: no
   `reported_pass` for a mechanism without a reported pass, no ignoring of a
@@ -130,7 +157,32 @@ evidence and VirusTotal results, `ai_assessment` absent and an empty
 the placeholder `inconclusive` for such rows; history filters and dashboard
 statistics exclude them from verdict counts.
 
-## 6. Storage and reports
+## 6. What the user sees
+
+The report has two levels. **Simple view**: verdict with a categorical
+indicator (a full ring coloured by verdict; severity as a labelled four-step
+scale), model confidence, summary, up to four reasons and two verified quotes,
+the most important links and attachments, and short actions. It shows no
+evidence identifiers, hashes or protocol names, and no numbers that could be
+read as a probability. A "legitimate" verdict always carries the note that
+sender authenticity and the safety of links and attachments were not verified.
+
+**Technical details** open on demand and hold everything else, each part
+collapsed: complete evidence with references, authentication per method with
+the raw header, attachments with hashes and VirusTotal results, the indicator
+explorer, technical observations, how the analysis ran, limits, and headers.
+
+There is no separate "contradictory evidence" section in the interface, the
+PDF or the JSON export. The model still has to weigh evidence against its
+verdict and the backend still validates those references; what the model noted
+appears with the limits of the analysis, and the instructions require material
+doubt to be stated in the summary. The PDF has no model-uncertainty section; it
+keeps the backend's limitations and standing qualifications.
+
+Reports stored before explanations became trilingual keep their single-language
+text and are displayed as they are.
+
+## 7. Storage and reports
 
 Bodies and the raw header map are not stored. The evidence list, validated
 quotes, authentication table, indicators and reputation results are. PDF and

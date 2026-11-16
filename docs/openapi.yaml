@@ -1,13 +1,16 @@
 openapi: 3.0.3
 info:
   title: CyberGuard AI backend API
-  version: 0.2.0
+  version: 0.3.0
   description: >-
     Local backend. Every error is JSON {error: {code, message, request_id}}. Storage problems are reported as
     DATABASE_SCHEMA_OUTDATED or DATABASE_UNAVAILABLE (503), never as a bare INTERNAL_ERROR. GET /health returns 503 with
     DATABASE_SCHEMA_OUTDATED when migrations are missing. A verdict exists only when ai_execution.status is completed;
     analyses with any other status carry evidence but no ai_assessment. JSON export wraps the analysis as
-    {export: {...}, analysis: {...}}. Exact-origin credentialed CORS is supported; a same-origin frontend proxy is recommended.
+    {export: {...}, analysis: {...}} and omits contradictory_evidence_ids and contradictory findings.
+    Email metadata carries sender_name and sender_address separately, plus subject_raw and sender_raw when the header
+    was encoded. contextual_findings[].reason and uncertainty_notes[] are objects with en, ru and kk (plain strings in
+    reports stored earlier). authentication[] items carry raw_value. Exact-origin credentialed CORS is supported; a same-origin frontend proxy is recommended.
 servers:
   - url: /api/v1
 security:
@@ -74,6 +77,44 @@ paths:
                   test_type: {type: string, enum: [public_hash_lookup]}
                   inference_performed: {type: boolean, enum: [false]}
         '400': {$ref: '#/components/responses/Error'}
+  /reputation/virustotal:
+    post:
+      operationId: lookupHashReputation
+      description: Returns VirusTotal's existing report for one SHA-256 supplied by the user. A lookup of stored reputation, not a scan; no file is downloaded, uploaded or stored. Uses the saved key and the same per-user allowance as attachment lookups.
+      parameters:
+        - {$ref: '#/components/parameters/CSRF'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sha256]
+              properties:
+                sha256: {type: string, pattern: '^[a-fA-F0-9]{64}$'}
+      responses:
+        '200':
+          description: Lookup result. status is completed, not_found, deferred_local_limit, rate_limited, authentication_failed, access_forbidden, timeout, network_error or provider_error.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lookup_type: {type: string, enum: [existing_report_by_hash]}
+                  file_content_scanned: {type: boolean, enum: [false]}
+                  result:
+                    type: object
+                    properties:
+                      sha256: {type: string}
+                      status: {type: string}
+                      source: {type: string}
+                      statistics: {type: object, additionalProperties: {type: integer}}
+                      last_analysis_at: {type: string, format: date-time}
+                      checked_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
   /settings/ai-provider:
     get:
       description: Current user's provider metadata only; API keys are never returned
