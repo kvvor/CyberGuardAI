@@ -148,14 +148,17 @@ func reconcile(out modelOutput, r detection.Report) (Assessment, error) {
 	for i := range a.Observations {
 		a.Observations[i].Verification = "quote_verified_interpretation_unverified"
 	}
-	for _, list := range [][]string{a.Patterns, a.Uncertainty} {
-		if len(list) > 32 {
+	if len(a.Patterns) > 32 || len(a.Uncertainty) > 16 {
+		return a, errInvalid
+	}
+	for _, s := range a.Patterns {
+		if len(s) > 2048 {
 			return a, errInvalid
 		}
-		for _, s := range list {
-			if len(s) > 2048 {
-				return a, errInvalid
-			}
+	}
+	for _, note := range a.Uncertainty {
+		if !note.Complete(2048) {
+			return a, errInvalid
 		}
 	}
 	if len(a.AttackTypes) > len(attackTypes) {

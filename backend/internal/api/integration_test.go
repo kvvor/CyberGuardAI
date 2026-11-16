@@ -522,7 +522,7 @@ func TestAnalysisPipelineWithMockProviders(t *testing.T) {
 		Export   map[string]any `json:"export"`
 		Analysis stored         `json:"analysis"`
 	}
-	if json.Unmarshal(export, &exported) != nil || exported.Analysis.ID != done.ID || exported.Analysis.AI.Verdict != "phishing" || exported.Export["format_version"] != float64(1) {
+	if json.Unmarshal(export, &exported) != nil || exported.Analysis.ID != done.ID || exported.Analysis.AI.Verdict != "phishing" || exported.Export["format_version"] != float64(2) {
 		t.Fatalf("JSON export: %s", export[:200])
 	}
 	for _, secret := range []string{mockproviders.KeyValid, "csrf_token", "password_hash", "cyberguard_session"} {

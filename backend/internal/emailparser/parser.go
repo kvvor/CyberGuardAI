@@ -27,12 +27,21 @@ type Attachment struct {
 	SHA256   string `json:"sha256"`
 }
 type Email struct {
-	Source                string              `json:"source_type"`
-	Filename              string              `json:"filename"`
-	SHA256                string              `json:"file_sha256"`
-	MessageID             string              `json:"message_id"`
-	Subject               string              `json:"subject"`
-	Sender                string              `json:"sender"`
+	Source    string `json:"source_type"`
+	Filename  string `json:"filename"`
+	SHA256    string `json:"file_sha256"`
+	MessageID string `json:"message_id"`
+	Subject   string `json:"subject"`
+	Sender    string `json:"sender"`
+	// SenderName is the display name the sender chose; SenderAddress is the
+	// actual address. They are shown separately so that a brand written into
+	// the display name is not mistaken for the sending address.
+	SenderName    string `json:"sender_name,omitempty"`
+	SenderAddress string `json:"sender_address,omitempty"`
+	// RawSubject and RawSender keep the header exactly as received when the
+	// readable form differs (encoded words).
+	RawSubject            string              `json:"subject_raw,omitempty"`
+	RawSender             string              `json:"sender_raw,omitempty"`
 	ReplyTo               string              `json:"reply_to"`
 	Recipients            []string            `json:"recipients"`
 	Headers               map[string][]string `json:"headers"`
@@ -47,7 +56,12 @@ type Email struct {
 
 func hash(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
 func Parse(data []byte, filename, source, sender, subject string) (Email, error) {
-	v := Email{Source: source, Filename: filepath.Base(filename), SHA256: hash(data), Sender: sender, Subject: subject, Attachments: []Attachment{}, Warnings: []string{}, Headers: map[string][]string{}}
+	v := Email{Source: source, SHA256: hash(data), Sender: sender, Subject: subject, Attachments: []Attachment{}, Warnings: []string{}, Headers: map[string][]string{}}
+	if filename != "" {
+		// filepath.Base("") is ".", which used to be displayed as a file name.
+		v.Filename = filepath.Base(filename)
+	}
+	v.SenderName, v.SenderAddress = SplitAddress(sender)
 	if len(data) > 10<<20 {
 		return v, fmt.Errorf("EMAIL_TOO_LARGE")
 	}
@@ -66,16 +80,19 @@ func Parse(data []byte, filename, source, sender, subject string) (Email, error)
 	if e != nil {
 		return v, fmt.Errorf("INVALID_EMAIL")
 	}
-	dec := mime.WordDecoder{CharsetReader: func(c string, r io.Reader) (io.Reader, error) { return charset.NewReaderLabel(c, r) }}
-	decode := func(s string) string {
-		x, e := dec.DecodeHeader(s)
-		if e != nil {
-			return s
-		}
-		return x
-	}
+	decode := DecodeHeader
 	v.Subject = decode(m.Header.Get("Subject"))
 	v.Sender = decode(m.Header.Get("From"))
+	if raw := m.Header.Get("Subject"); raw != v.Subject {
+		v.RawSubject = raw
+	}
+	if raw := m.Header.Get("From"); raw != v.Sender {
+		v.RawSender = raw
+	}
+	// The address is taken from the raw header and only the display name is
+	// decoded, so decoding can never alter the actual sending address.
+	name, address := SplitAddress(m.Header.Get("From"))
+	v.SenderName, v.SenderAddress = decode(name), address
 	v.ReplyTo = decode(m.Header.Get("Reply-To"))
 	v.MessageID = m.Header.Get("Message-ID")
 	v.Recipients = []string{}
@@ -167,9 +184,7 @@ func part(v *Email, h textproto.MIMEHeader, r io.Reader, depth int, budget *int)
 			return fmt.Errorf("ATTACHMENT_LIMIT")
 		}
 		// RFC 2047 encoded-word file names are common in real mail.
-		if decoded, err := (&mime.WordDecoder{CharsetReader: func(c string, r io.Reader) (io.Reader, error) { return charset.NewReaderLabel(c, r) }}).DecodeHeader(name); err == nil {
-			name = decoded
-		}
+		name = DecodeHeader(name)
 		name = strings.ReplaceAll(name, "\\", "/")
 		if len(name) > 255 {
 			name = strings.ToValidUTF8(name[:255], "")

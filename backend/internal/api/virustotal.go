@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"cyberguard.local/backend/internal/detection"
@@ -186,4 +188,60 @@ func (s *Server) recheckVirusTotal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	JSON(w, 200, row)
+}
+
+var sha256Hex = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
+
+// lookupHash returns VirusTotal's existing report for one SHA-256 that the
+// user typed in. It is a lookup of stored reputation, not a scan: no file is
+// downloaded, uploaded or executed. One explicit request makes one provider
+// call under the same per-user allowance as attachment lookups, and nothing
+// is stored.
+func (s *Server) lookupHash(w http.ResponseWriter, r *http.Request) {
+	if !s.allowed("provider", r.RemoteAddr, 30) {
+		w.Header().Set("Retry-After", "60")
+		fail(w, r, 429, "RATE_LIMITED")
+		return
+	}
+	var in struct {
+		SHA256 string `json:"sha256"`
+	}
+	if decode(w, r, &in) != nil {
+		fail(w, r, 400, "INVALID_REQUEST")
+		return
+	}
+	hash := strings.ToLower(strings.TrimSpace(in.SHA256))
+	if !sha256Hex.MatchString(hash) {
+		fail(w, r, 400, "INVALID_SHA256")
+		return
+	}
+	p := s.providerService().For("virustotal")
+	c, secret, err := p.Read(r.Context(), owner(r))
+	if err != nil {
+		internal(w, r, "provider settings read", err)
+		return
+	}
+	if !c.HasCredential {
+		fail(w, r, 409, "PROVIDER_NOT_CONFIGURED")
+		return
+	}
+	if !c.Enabled {
+		fail(w, r, 409, "PROVIDER_DISABLED")
+		return
+	}
+	key, err := p.Open(owner(r), secret)
+	if err != nil {
+		s.resolveFailure(w, r, c, err)
+		return
+	}
+	allowed, err := p.ReserveLookup(r.Context(), owner(r))
+	if err != nil {
+		internal(w, r, "virustotal quota", err)
+		return
+	}
+	result := virustotal.Result{SHA256: hash, Status: "deferred_local_limit", Source: "VirusTotal API v3"}
+	if allowed {
+		result = s.virusTotalClient(key).Lookup(r.Context(), hash)
+	}
+	JSON(w, 200, map[string]any{"result": result, "lookup_type": "existing_report_by_hash", "file_content_scanned": false})
 }

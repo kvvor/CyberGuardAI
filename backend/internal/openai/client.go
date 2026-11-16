@@ -45,10 +45,10 @@ type Assessment struct {
 	Patterns       []string                  `json:"social_engineering_patterns"`
 	Findings       []EvidenceFinding         `json:"evidence_findings,omitempty"`
 	Supporting     []string                  `json:"supporting_evidence_ids"`
-	Contradictory  []string                  `json:"contradictory_evidence_ids"`
+	Contradictory  []string                  `json:"contradictory_evidence_ids,omitempty"`
 	Authentication *AuthenticationAssessment `json:"authentication_assessment,omitempty"`
 	Attachments    string                    `json:"attachment_assessment,omitempty"`
-	Uncertainty    []string                  `json:"uncertainty_notes"`
+	Uncertainty    []detection.Localized     `json:"uncertainty_notes"`
 	// Explanations/Recommendations are model prose in three languages.
 	Explanations    map[string]string `json:"explanations"`
 	Recommendations map[string]string `json:"recommendations"`
@@ -95,7 +95,7 @@ type modelOutput struct {
 	Observations    []detection.Observation  `json:"contextual_findings"`
 	Authentication  AuthenticationAssessment `json:"authentication_assessment"`
 	Attachments     string                   `json:"attachment_assessment"`
-	Uncertainty     []string                 `json:"uncertainty_notes"`
+	Uncertainty     []detection.Localized    `json:"uncertainty_notes"`
 	Explanations    map[string]string        `json:"explanations"`
 	Recommendations map[string]string        `json:"recommendations"`
 }
@@ -139,12 +139,12 @@ func schema() map[string]any {
 			"type":       enum("credential_theft", "payment_diversion", "coercion", "impersonation", "benign_context"),
 			"quote":      str,
 			"source":     enum("text_body", "html_body", "subject"),
-			"reason":     str,
+			"reason":     localized,
 			"confidence": enum("low", "medium", "high"),
 		})},
 		"authentication_assessment": object(map[string]any{"spf": reported, "dkim": reported, "dmarc": reported, "independently_verified": map[string]any{"type": "boolean"}}),
 		"attachment_assessment":     enum(AttachmentStates...),
-		"uncertainty_notes":         arr,
+		"uncertainty_notes":         map[string]any{"type": "array", "items": localized},
 		"explanations":              localized,
 		"recommendations":           localized,
 	})
@@ -178,8 +178,15 @@ JUDGEMENT
 - Equally, absence of obvious keywords, a reported SPF pass or a familiar-looking sender does not prove legitimacy. Look for requests for credentials, payments, changed bank details, secrecy, impersonation of brands or colleagues, lookalike or unrelated domains and mismatches between visible link text and destination.
 - verdict: "phishing" when the evidence shows a deceptive attempt to obtain credentials, money, data or to deliver malware; "suspicious" when there are material warning signs but a legitimate explanation remains plausible; "legitimate" when the content and technical evidence are coherent with an ordinary message; "inconclusive" when evidence is insufficient (for example body text without headers and without a clear request).
 - severity is the potential impact if the recipient complies (none, low, medium, high, critical). confidence is qualitative (low, medium, high), never a probability or percentage.
-- uncertainty_notes: state missing evidence and limits plainly.
-- explanations: a short evidence-based summary; recommendations: concrete next steps for the recipient. Write both in English (en), Russian (ru) and Kazakh (kk).`
+- uncertainty_notes: state missing evidence and limits plainly, at most six short notes.
+- explanations: a short evidence-based summary in plain words for a reader without security training (two to four sentences). If a legitimate explanation remains plausible, or evidence points the other way, say so here in one sentence. recommendations: two to four concrete next steps for the recipient, one per line.
+- A "legitimate" verdict means "consistent with an ordinary message on the available evidence". Never state that an email is safe, verified or guaranteed. When headers are missing, the sender is unverified or links were not checked, say so in the summary.
+- Authentication that passes for the sending domain says nothing about a different brand named in the display name or text.
+- Never describe what a linked page or an attachment contains: neither was opened.
+
+LANGUAGE
+- Every explanation, reason, uncertainty note, summary and recommendation must be written in English (en), Russian (ru) and Kazakh (kk) with the same meaning in each. Never leave one language in another's field.
+- "quote" stays exactly as in the email, in its original language. Never translate or alter quotes, addresses, domains, URLs, hashes or header values.`
 
 // Input builds the only document sent to the provider. It contains selected,
 // bounded evidence: no attachment bytes, raw HTML, raw header block or credentials.

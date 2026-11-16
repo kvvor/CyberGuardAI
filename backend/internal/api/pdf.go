@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"cyberguard.local/backend/internal/detection"
+	"cyberguard.local/backend/internal/emailparser"
 	"cyberguard.local/backend/internal/reports"
 	"github.com/go-pdf/fpdf"
 )
@@ -51,8 +52,43 @@ func printable(s string) string {
 	return b.String()
 }
 
+// / shorten keeps long technical values readable in summary sections; the
+// complete value is always present in the technical part or the JSON export.
+func shorten(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut, _ := cutString(s, n)
+	return cut + "…"
+}
+
+// keyLinks selects the destinations a reader most needs to see: links whose
+// visible text names another site, links to bare IP addresses and form
+// targets first, then ordinary links, three at most.
+func keyLinks(links []detection.Link) []detection.Link {
+	out := []detection.Link{}
+	for _, l := range links {
+		if l.Mismatch || l.Kind == "form_action" {
+			out = append(out, l)
+		}
+	}
+	for _, l := range links {
+		if len(out) >= 3 {
+			break
+		}
+		if !l.Mismatch && l.Kind != "form_action" {
+			out = append(out, l)
+		}
+	}
+	if len(out) > 4 {
+		out = out[:4]
+	}
+	return out
+}
+
 // pdfReport renders only stored findings. Nothing here is computed from the
-// email again and no provider result is invented for missing data.
+// email again and no provider result is invented for missing data. The first
+// page answers "what is it and what should I do"; technical details follow.
 func pdfReport(row stored, lang string) (data []byte, err error) {
 	defer func() {
 		if recover() != nil {
@@ -77,43 +113,33 @@ func pdfReport(row stored, lang string) (data []byte, err error) {
 		p.Ln(1)
 	}
 	line := func(s string) { text(10, s) }
+	small := func(s string) {
+		p.SetTextColor(90, 90, 90)
+		text(8.5, s)
+		p.SetTextColor(0, 0, 0)
+	}
+	// field prints a labelled value and nothing at all when the value is empty.
 	field := func(key, value string) {
-		if strings.TrimSpace(value) == "" {
-			value = L("not_provided")
+		if strings.TrimSpace(value) != "" && value != "." {
+			line(L(key) + ": " + value)
 		}
-		line(L(key) + ": " + value)
 	}
 	bullet := func(s string) { line("• " + s) }
-	local := func(m map[string]string) string {
-		if v := m[lang]; v != "" {
-			return v
-		}
-		return m["en"]
-	}
 	r, a := row.Report, row.AI
 	legacy := r.Version != detection.EvidenceVersion
+	evidence := map[string]string{}
+	for _, e := range r.Evidence {
+		evidence[e.ID] = e.Value
+	}
+	reputation := map[string]int{}
+	for i, rep := range r.AttachmentReputation {
+		reputation[rep.SHA256] = i + 1
+	}
 
 	text(16, "CyberGuard AI — "+L("title"))
-	line("Security, made clear.")
-	heading(L("section_identity"))
-	field("id", row.ID)
-	field("date", row.Created.UTC().Format(time.RFC3339))
-	field("source_type", r.Email.Source)
-	field("filename", r.Email.Filename)
-	field("file_sha256", r.Email.SHA256)
+	small(L("id") + ": " + row.ID + " · " + L("date") + ": " + row.Created.UTC().Format(time.RFC3339))
 
-	heading(L("section_email"))
-	field("subject", r.Email.Subject)
-	field("sender", r.Email.Sender)
-	field("reply_to", r.Email.ReplyTo)
-	field("recipients", strings.Join(r.Email.Recipients, ", "))
-	if r.Email.Timestamp != nil {
-		field("email_date", r.Email.Timestamp.UTC().Format(time.RFC3339))
-	} else {
-		field("email_date", "")
-	}
-	field("message_id", r.Email.MessageID)
-
+	// ---- Result ----------------------------------------------------------
 	heading(L("section_assessment"))
 	switch {
 	case legacy:
@@ -122,12 +148,99 @@ func pdfReport(row stored, lang string) (data []byte, err error) {
 		line(L("risk") + ": " + fmt.Sprintf("%d / %s", r.Score, L(r.Level)))
 	case a == nil:
 		line(L("incomplete_notice"))
+		line("OpenAI: " + L("status_"+row.AIExecution.Status))
+		if row.AIExecution.Failure != "" {
+			field("failure", L(row.AIExecution.Failure))
+		}
 	default:
-		field("verdict", L(a.Verdict))
-		field("severity", L(a.Severity))
-		field("confidence", L(a.Confidence))
-		line(L("confidence_notice"))
+		text(14, L(a.Verdict))
+		line(L("severity") + ": " + L(a.Severity) + " · " + L("confidence") + ": " + L(a.Confidence))
+		if a.Verdict == "legitimate" {
+			line(L("legitimate_notice"))
+		}
+		small(L("confidence_notice"))
 	}
+
+	heading(L("section_email"))
+	field("subject", r.Email.Subject)
+	name, address := r.Email.SenderName, r.Email.SenderAddress
+	if name == "" && address == "" {
+		// Reports stored before the fields were split.
+		name, address = emailparser.SplitAddress(r.Email.Sender)
+	}
+	field("display_name", name)
+	field("from_address", address)
+	if name != "" && address != "" {
+		small(L("display_name_notice"))
+	}
+	field("reply_to", r.Email.ReplyTo)
+	field("recipients", strings.Join(r.Email.Recipients, ", "))
+	if r.Email.Timestamp != nil {
+		field("email_date", r.Email.Timestamp.UTC().Format(time.RFC3339))
+	}
+
+	if a != nil && !legacy {
+		heading(L("summary"))
+		line(a.Explanations[lang])
+
+		heading(L("main_reasons"))
+		reasons := 0
+		for _, f := range a.Findings {
+			if f.Stance == "supporting" && reasons < 4 {
+				reasons++
+				bullet(f.Explanation[lang])
+			}
+		}
+		for i, o := range a.Observations {
+			if !supportsVerdict(a.Verdict, o.Type) || i >= 2 || reasons >= 5 {
+				continue
+			}
+			reasons++
+			bullet("“" + shorten(o.Quote, 220) + "” — " + o.Reason.In(lang))
+		}
+		if reasons == 0 {
+			line(L("none"))
+		}
+	} else if legacy {
+		explanation, recommendation := detection.Narrative(lang)
+		heading(L("summary"))
+		line(explanation)
+		heading(L("recommendations"))
+		line(recommendation)
+	}
+
+	if !legacy && (len(r.Links) > 0 || len(r.Email.Attachments) > 0) {
+		heading(L("key_items"))
+		for _, l := range keyLinks(r.Links) {
+			s := L("link_leads") + " " + shorten(detection.Defang(l.Destination), 110)
+			if l.Mismatch && l.Text != "" {
+				s = L("link_shown") + " “" + shorten(l.Text, 60) + "”, " + s
+			}
+			bullet(s)
+		}
+		for _, at := range r.Email.Attachments {
+			s := at.Filename
+			if i, ok := reputation[at.SHA256]; ok {
+				rep := r.AttachmentReputation[i-1]
+				s += " — VirusTotal: " + L("status_"+rep.Status)
+				if rep.Statistics != nil {
+					s += fmt.Sprintf(" (%s: %d)", L("malicious"), rep.Statistics["malicious"])
+				}
+			}
+			bullet(s)
+		}
+	}
+
+	if a != nil && !legacy {
+		heading(L("recommendations"))
+		line(a.Recommendations[lang])
+	}
+
+	// ---- Technical details -----------------------------------------------
+	p.Ln(4)
+	p.SetTextColor(20, 80, 130)
+	text(15, L("technical_details"))
+	p.SetTextColor(0, 0, 0)
 
 	heading(L("section_providers"))
 	if !legacy {
@@ -136,6 +249,9 @@ func pdfReport(row stored, lang string) (data []byte, err error) {
 			model = L("not_provided")
 		}
 		line("OpenAI: " + L("status_"+row.AIExecution.Status) + " (" + L("model") + ": " + model + ")")
+		if row.AIExecution.DurationMS > 0 {
+			line(L("duration") + ": " + fmt.Sprintf("%.1f s", float64(row.AIExecution.DurationMS)/1000))
+		}
 		if row.AIExecution.Failure != "" {
 			field("failure", L(row.AIExecution.Failure))
 		}
@@ -147,78 +263,72 @@ func pdfReport(row stored, lang string) (data []byte, err error) {
 	} else {
 		line("AI: " + row.AIExecution.Status)
 	}
+	field("source_type", L("source_"+r.Email.Source))
+	field("filename", r.Email.Filename)
+	field("file_sha256", r.Email.SHA256)
+	field("message_id", r.Email.MessageID)
 
 	if a != nil && !legacy {
-		heading(L("summary"))
-		line(local(a.Explanations))
-		heading(L("recommendations"))
-		line(local(a.Recommendations))
-		evidence := map[string]string{}
-		for _, e := range r.Evidence {
-			evidence[e.ID] = e.Value
+		heading(L("section_supporting"))
+		small(L("evidence_notice"))
+		count := 0
+		for _, f := range a.Findings {
+			if f.Stance != "supporting" {
+				continue
+			}
+			count++
+			bullet(f.Explanation[lang])
+			for _, id := range f.EvidenceIDs {
+				value, _ := cutString(evidence[id], 400)
+				small("    [" + id + "] " + value)
+			}
 		}
-		for _, stance := range []string{"supporting", "contradictory"} {
-			heading(L("section_" + stance))
-			count := 0
-			for _, f := range a.Findings {
-				if f.Stance != stance {
-					continue
-				}
+		if len(a.Findings) == 0 {
+			// Reports created before per-finding explanations list IDs only.
+			for _, id := range a.Supporting {
 				count++
-				bullet(local(f.Explanation))
-				for _, id := range f.EvidenceIDs {
-					value, _ := cutString(evidence[id], 400)
-					line("    [" + id + "] " + value)
-				}
-			}
-			if len(a.Findings) == 0 {
-				// Reports created before evidence_findings existed list IDs only.
-				ids := a.Supporting
-				if stance == "contradictory" {
-					ids = a.Contradictory
-				}
-				for _, id := range ids {
-					count++
-					value, _ := cutString(evidence[id], 400)
-					bullet("[" + id + "] " + value)
-				}
-			}
-			if stance == "supporting" {
-				for _, o := range a.Observations {
-					count++
-					bullet("“" + o.Quote + "” — " + o.Reason + " (" + L("quote_notice") + ")")
-				}
-			}
-			if count == 0 {
-				line(L("none"))
+				value, _ := cutString(evidence[id], 400)
+				bullet("[" + id + "] " + value)
 			}
 		}
-		if len(a.Uncertainty) > 0 {
-			heading(L("uncertainty"))
-			for _, u := range a.Uncertainty {
-				bullet(u)
+		for _, o := range a.Observations {
+			if !supportsVerdict(a.Verdict, o.Type) {
+				continue
 			}
+			count++
+			bullet("“" + o.Quote + "” — " + o.Reason.In(lang))
 		}
-	} else if legacy {
-		explanation, recommendation := detection.Narrative(lang)
-		heading(L("summary"))
-		line(explanation)
-		heading(L("recommendations"))
-		line(recommendation)
-	} else {
-		heading(L("summary"))
-		line(local(row.Explanations))
+		if count == 0 {
+			line(L("none"))
+		}
 	}
 
 	if !legacy {
 		heading(L("section_authentication"))
-		line(L("authentication_notice"))
+		small(L("authentication_notice"))
 		for _, v := range r.Authentication {
-			s := strings.ToUpper(v.Mechanism) + ": " + v.Result + " — " + L(v.Trust) + ", " + L(v.Verification)
-			if v.Server != "" {
-				s += " (" + v.Server + ")"
+			s := strings.ToUpper(v.Mechanism) + ": "
+			if v.Result == "unavailable" || v.Result == "" {
+				s += L("unavailable")
+			} else {
+				s += v.Result + " — " + L(v.Trust) + "; " + L(v.Verification)
+				if v.Server != "" {
+					s += "; " + L("reported_by") + " " + v.Server
+				}
 			}
 			bullet(s)
+			for _, l := range v.Limitations {
+				if l != "UPLOADED_HEADERS_CAN_BE_FORGED" && l != "NO_REPORTED_RESULT" {
+					small("    " + L(l))
+				}
+			}
+		}
+		raw := map[string]bool{}
+		for _, v := range r.Authentication {
+			if v.Raw != "" && !raw[v.Raw] {
+				raw[v.Raw] = true
+				small(v.Source + ": " + v.Raw)
+			}
 		}
 	} else if len(r.Email.AuthenticationResults) > 0 {
 		heading(L("section_authentication"))
@@ -227,74 +337,86 @@ func pdfReport(row stored, lang string) (data []byte, err error) {
 		}
 	}
 
-	heading(L("attachments"))
-	if len(r.Email.Attachments) == 0 {
-		line(L("none"))
-	}
-	for _, at := range r.Email.Attachments {
-		bullet(fmt.Sprintf("%s (%d %s; %s / %s)", at.Filename, at.Size, L("bytes"), at.Declared, at.Detected))
-		line("    SHA-256: " + at.SHA256)
-		for _, rep := range r.AttachmentReputation {
-			if rep.SHA256 != at.SHA256 {
-				continue
-			}
-			s := "    VirusTotal: " + L("status_"+rep.Status)
-			if rep.Statistics != nil {
-				s += fmt.Sprintf(" — %s: %d, %s: %d, %s: %d, %s: %d", L("malicious"), rep.Statistics["malicious"], L("suspicious_count"), rep.Statistics["suspicious"], L("harmless"), rep.Statistics["harmless"], L("undetected"), rep.Statistics["undetected"])
-			}
-			if rep.LastAnalysis != nil {
-				s += "; " + L("last_analysis") + ": " + rep.LastAnalysis.UTC().Format(time.RFC3339)
-			}
-			line(s)
-			break
-		}
-	}
 	if len(r.Email.Attachments) > 0 {
-		line(L("reputation_notice"))
+		heading(L("attachments"))
+		for _, at := range r.Email.Attachments {
+			bullet(fmt.Sprintf("%s (%d %s; %s / %s)", at.Filename, at.Size, L("bytes"), at.Declared, at.Detected))
+			small("    SHA-256: " + at.SHA256)
+			if i, ok := reputation[at.SHA256]; ok {
+				rep := r.AttachmentReputation[i-1]
+				s := "    VirusTotal: " + L("status_"+rep.Status)
+				if rep.Statistics != nil {
+					s += fmt.Sprintf(" — %s: %d, %s: %d, %s: %d, %s: %d", L("malicious"), rep.Statistics["malicious"], L("suspicious_count"), rep.Statistics["suspicious"], L("harmless"), rep.Statistics["harmless"], L("undetected"), rep.Statistics["undetected"])
+				}
+				if rep.LastAnalysis != nil {
+					s += "; " + L("last_analysis") + ": " + rep.LastAnalysis.UTC().Format(time.RFC3339)
+				}
+				small(s)
+			}
+		}
+		small(L("reputation_notice"))
 	}
 
-	heading(L("iocs"))
 	shown, omitted := 0, 0
+	lines := []string{}
 	for _, x := range r.IOCs {
-		if !legacy && !detection.Actionable(x.Category) {
+		if (!legacy && !detection.Actionable(x.Category)) || shown >= 150 {
 			omitted++
 			continue
 		}
-		if shown >= 150 {
-			omitted++
+		// Attachment hashes are already listed with their attachments.
+		if x.Type == "sha256" && !legacy {
 			continue
 		}
 		shown++
-		bullet(x.Type + ": " + x.Defanged)
+		lines = append(lines, x.Type+": "+x.Defanged)
 	}
-	if shown == 0 {
-		line(L("none"))
-	}
-	if omitted > 0 {
-		line(fmt.Sprintf(L("omitted_resources"), omitted))
+	if shown > 0 || omitted > 0 {
+		heading(L("iocs"))
+		for _, s := range lines {
+			bullet(s)
+		}
+		if omitted > 0 {
+			small(fmt.Sprintf(L("omitted_resources"), omitted))
+		}
 	}
 
-	heading(L("indicators"))
-	if len(r.Indicators) == 0 {
-		line(L("none"))
-	}
-	for _, f := range r.Indicators {
-		value, _ := cutString(f.Evidence, 500)
-		bullet(L(f.Code) + ": " + value)
+	if len(r.Indicators) > 0 {
+		heading(L("indicators"))
+		for _, f := range r.Indicators {
+			value, _ := cutString(f.Evidence, 500)
+			bullet(L(f.Code) + ": " + value)
+		}
 	}
 
 	heading(L("limitations"))
-	if len(r.Limitations) == 0 {
-		line(L("none"))
-	}
 	for _, l := range r.Limitations {
 		bullet(L(l))
 	}
+	// Standing qualifications that apply to every report.
+	bullet(L("caveat_not_guarantee"))
+	if len(r.Email.Attachments) > 0 {
+		bullet(L("caveat_reputation"))
+	}
 	p.Ln(4)
-	text(8, L("footer"))
+	small(L("footer"))
 	var b bytes.Buffer
 	if err = p.Output(&b); err != nil {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+// supportsVerdict reports whether a quoted passage argues for the verdict:
+// benign context supports "legitimate", everything else supports "phishing"
+// and "suspicious". Quotes that argue the other way are part of the model's
+// internal weighing and are not listed as reasons.
+func supportsVerdict(verdict, kind string) bool {
+	switch verdict {
+	case "legitimate":
+		return kind == "benign_context"
+	case "phishing", "suspicious":
+		return kind != "benign_context"
+	}
+	return true
 }

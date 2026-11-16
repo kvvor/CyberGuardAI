@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"cyberguard.local/backend/internal/emailparser"
 	"cyberguard.local/backend/internal/virustotal"
@@ -87,6 +88,29 @@ func Defang(s string) string {
 	s = strings.ReplaceAll(s, "http://", "hxxp://")
 	s = strings.ReplaceAll(s, ".", "[.]")
 	return strings.ReplaceAll(s, "@", "[@]")
+}
+
+var nameDomain = regexp.MustCompile(`[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|co|info|biz|app|dev|ru|kz|de|uk|fr|eu|us|cn|online|site|xyz|top|shop|support|cloud|example)\b`)
+
+// mixedScripts reports a single word that combines Latin letters with Cyrillic
+// or Greek ones (for example "Micrоsоft"). Whole words in different
+// alphabets next to each other are normal and are not reported.
+func mixedScripts(s string) bool {
+	for _, word := range strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		latin, other := false, false
+		for _, r := range word {
+			switch {
+			case unicode.Is(unicode.Latin, r):
+				latin = true
+			case unicode.Is(unicode.Cyrillic, r) || unicode.Is(unicode.Greek, r):
+				other = true
+			}
+		}
+		if latin && other {
+			return true
+		}
+	}
+	return false
 }
 
 func addressDomain(s string) string {
@@ -180,9 +204,25 @@ func Analyze(e emailparser.Email) Report {
 	if strings.Contains(strings.ToLower(from), "xn--") {
 		add("PUNYCODE_SENDER_DOMAIN", e.Sender, "headers")
 	}
-	if a, err := mail.ParseAddress(e.Sender); err == nil {
-		if shown := emails.FindString(a.Name); shown != "" && !strings.EqualFold(shown, a.Address) {
-			add("DISPLAY_NAME_CONTAINS_OTHER_ADDRESS", e.Sender, "headers")
+	// The display name is free text chosen by the sender. An address or domain
+	// written there that differs from the real address, or letters from several
+	// alphabets inside one word, are recorded as facts about how the sender
+	// presents itself. They are common in impersonation and also occur in
+	// ordinary mail (shared mailboxes, forwarding services).
+	if name, address := emailparser.SplitAddress(e.Sender); name != "" && address != "" {
+		real := addressDomain(address)
+		if shown := emails.FindString(name); shown != "" && !strings.EqualFold(shown, address) {
+			add("DISPLAY_NAME_CONTAINS_OTHER_ADDRESS", "display name: "+name+" | address: "+address, "headers")
+		} else if shown == "" {
+			for _, candidate := range nameDomain.FindAllString(strings.ToLower(name), 4) {
+				if real != "" && !related(candidate, real) {
+					add("DISPLAY_NAME_SHOWS_OTHER_DOMAIN", "display name: "+name+" | address: "+address, "headers")
+					break
+				}
+			}
+		}
+		if mixedScripts(name) {
+			add("DISPLAY_NAME_MIXES_ALPHABETS", "display name: "+name+" | address: "+address, "headers")
 		}
 	}
 	for _, value := range e.AuthenticationResults {
@@ -272,7 +312,8 @@ func Analyze(e emailparser.Email) Report {
 		}
 		if len(r.Links) < 128 {
 			for _, existing := range r.Links {
-				if existing.Destination == normalized && existing.Text == text {
+				// The same destination repeated in the plain-text part adds nothing.
+				if existing.Destination == normalized && (existing.Text == text || text == "") {
 					return
 				}
 			}
@@ -292,7 +333,22 @@ func Analyze(e emailparser.Email) Report {
 			if n.Type == html.ElementNode {
 				switch n.Data {
 				case "a", "area":
-					if href := attr(n, "href"); href != "" {
+					href := strings.TrimSpace(attr(n, "href"))
+					if strings.HasPrefix(strings.ToLower(href), "mailto:") {
+						// A mailto link is an address to write to, not a web destination.
+						target := href[len("mailto:"):]
+						if q := strings.IndexAny(target, "?#"); q >= 0 {
+							target = target[:q]
+						}
+						if unescaped, err := url.PathUnescape(target); err == nil {
+							target = unescaped
+						}
+						for _, address := range emails.FindAllString(target, 4) {
+							ioc("email", address, href, "email_address", "html_mailto", "")
+							parts := strings.Split(address, "@")
+							ioc("domain", parts[len(parts)-1], parts[len(parts)-1], "email_domain", "html_mailto", "")
+						}
+					} else if href != "" {
 						link(href, textContent(n, 300), "html_link")
 					}
 				case "form":
@@ -383,6 +439,12 @@ func Analyze(e emailparser.Email) Report {
 		}
 		if strings.Contains("|.zip|.rar|.7z|.gz|.tar|.cab|", "|"+ext+"|") {
 			add("ARCHIVE_CONTENT_NOT_INSPECTED", a.Filename, "attachment")
+		}
+		if strings.Contains("|.mobileconfig|.mobileprovision|.reg|.inf|.ppkg|", "|"+ext+"|") {
+			// Installing such a file changes device or system settings (for
+			// example trusted certificates, VPN or mail accounts). The type is
+			// noted; the content was not inspected and nothing says it is harmful.
+			add("CONFIGURATION_PROFILE_ATTACHMENT", a.Filename, "attachment")
 		}
 		if ext == ".html" || ext == ".htm" || ext == ".svg" || ext == ".shtml" {
 			add("HTML_ATTACHMENT", a.Filename, "attachment")

@@ -239,7 +239,8 @@ func (s *Server) detail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Disposition", `attachment; filename="cyberguard-report.json"`)
-		JSON(w, 200, map[string]any{"export": map[string]any{"format": "cyberguard-analysis", "format_version": 1, "exported_at": time.Now().UTC(), "generator": "CyberGuard AI", "notice": "Verdict, severity and confidence are a model assessment of the listed evidence, not a probability. Authentication results are reported by uploaded headers unless marked verified."}, "analysis": row})
+		row = exportView(row)
+		JSON(w, 200, map[string]any{"export": map[string]any{"format": "cyberguard-analysis", "format_version": 2, "exported_at": time.Now().UTC(), "generator": "CyberGuard AI", "notice": "Verdict, severity and confidence are a model assessment of the listed evidence, not a probability. Authentication results are reported by uploaded headers unless marked verified."}, "analysis": row})
 		return
 	}
 	JSON(w, 200, row)
@@ -366,4 +367,27 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	result["common_attack_types"] = categories
 	JSON(w, 200, result)
+}
+
+// exportView prepares an analysis for the user-facing JSON export. The report
+// has no "contradictory evidence" section: findings the model weighed against
+// its verdict are not exported as a list of their own, and the summary and
+// limitations carry any remaining doubt. All backend evidence, verified quotes
+// and every supporting reference stay intact, so each exported statement can
+// still be traced to its evidence item.
+func exportView(row stored) stored {
+	if row.AI == nil {
+		return row
+	}
+	a := *row.AI
+	a.Contradictory = nil
+	supporting := make([]ai.EvidenceFinding, 0, len(a.Findings))
+	for _, f := range a.Findings {
+		if f.Stance == "supporting" {
+			supporting = append(supporting, f)
+		}
+	}
+	a.Findings = supporting
+	row.AI = &a
+	return row
 }

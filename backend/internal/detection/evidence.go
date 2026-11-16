@@ -31,6 +31,25 @@ type Authentication struct {
 	Verification string   `json:"verification_status"`
 	Alignment    string   `json:"alignment_information"`
 	Limitations  []string `json:"limitations"`
+	// Raw is the complete header this result was read from, for forensic review.
+	Raw string `json:"raw_value,omitempty"`
+}
+
+// stripComments removes RFC 5322 comments, including nested ones.
+func stripComments(s string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '(':
+			depth++
+		case r == ')' && depth > 0:
+			depth--
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // TrustedAuthServers lists authserv-id values (RFC 8601) of the operator's own
@@ -157,10 +176,23 @@ func PrepareEvidence(r *Report) {
 			break
 		}
 		value = strings.Join(strings.Fields(value), " ")
-		parts := strings.Split(value, ";")
+		// Comments "(...)" may contain semicolons and equals signs; they are
+		// removed for parsing only. The complete header stays in the report.
+		parts := strings.Split(stripComments(value), ";")
 		server := ""
-		if fields := strings.Fields(parts[0]); len(fields) > 0 {
-			server = strings.ToLower(fields[0])
+		results := parts
+		// RFC 8601 puts the reporting server (authserv-id) first. Microsoft 365
+		// and others often omit it and start directly with "spf=pass ...". The
+		// old code then took "spf=pass" for the server name and lost the SPF
+		// result, which produced the mixed-up authentication display.
+		if first := strings.Fields(parts[0]); len(first) > 0 && !strings.Contains(first[0], "=") {
+			server = strings.ToLower(first[0])
+			results = parts[1:]
+			// "server 1; spf=..." (version) is fine; "server spf=pass" on the
+			// same segment is also seen in the wild.
+			if rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(parts[0]), first[0])); strings.Contains(rest, "=") {
+				results = append([]string{rest}, results...)
+			}
 		}
 		trust := "untrusted_reported"
 		limitation := "UPLOADED_HEADERS_CAN_BE_FORGED"
@@ -172,12 +204,14 @@ func PrepareEvidence(r *Report) {
 				}
 			}
 		}
-		for _, part := range parts[1:] {
+		for _, part := range results {
 			m := authResult.FindStringSubmatch(part)
 			if len(m) != 4 || len(r.Authentication) >= 24 {
 				continue
 			}
-			mechanism := strings.ToLower(m[1])
+			mechanism, result := strings.ToLower(m[1]), strings.ToLower(m[2])
+			// Properties are read from this result's own segment only, so one
+			// method never receives another method's details.
 			properties := []string{}
 			for _, p := range authProperty.FindAllStringSubmatch(m[3], 6) {
 				properties = append(properties, strings.ToLower(p[1])+"="+p[2])
@@ -186,10 +220,18 @@ func PrepareEvidence(r *Report) {
 			if len(properties) > 0 {
 				alignment = "reported: " + strings.Join(properties, "; ")
 			}
+			limitations := []string{limitation}
+			if result == "bestguesspass" {
+				// Microsoft's value for a domain without a DMARC record: a guess,
+				// not a pass of a published policy.
+				limitations = append(limitations, "DMARC_BESTGUESS_IS_NOT_A_POLICY_PASS")
+			}
 			id := fmt.Sprintf("authentication-%s-%d", mechanism, len(r.Authentication)+1)
-			add(id, "Authentication-Results", strings.TrimSpace(parts[0])+"; "+strings.TrimSpace(part), trust)
-			server, _ := cut(server, 256)
-			r.Authentication = append(r.Authentication, Authentication{id, mechanism, strings.ToLower(m[2]), server, "Authentication-Results", trust, "unable_to_verify", alignment, []string{limitation}})
+			segment := strings.TrimSpace(part)
+			add(id, "Authentication-Results", segment, trust)
+			reporter, _ := cut(server, 256)
+			raw, _ := cut(value, 2048)
+			r.Authentication = append(r.Authentication, Authentication{ID: id, Mechanism: mechanism, Result: result, Server: reporter, Source: "Authentication-Results", Trust: trust, Verification: "unable_to_verify", Alignment: alignment, Limitations: limitations, Raw: raw})
 			found[mechanism] = true
 		}
 	}
@@ -198,7 +240,8 @@ func PrepareEvidence(r *Report) {
 			if m := receivedSPF.FindStringSubmatch(value); m != nil {
 				id := fmt.Sprintf("authentication-spf-%d", len(r.Authentication)+1)
 				add(id, "Received-SPF", strings.Join(strings.Fields(value), " "), "untrusted_reported")
-				r.Authentication = append(r.Authentication, Authentication{id, "spf", strings.ToLower(m[1]), "", "Received-SPF", "untrusted_reported", "unable_to_verify", "not_reported", []string{"UPLOADED_HEADERS_CAN_BE_FORGED"}})
+				raw, _ := cut(strings.Join(strings.Fields(value), " "), 2048)
+				r.Authentication = append(r.Authentication, Authentication{ID: id, Mechanism: "spf", Result: strings.ToLower(m[1]), Source: "Received-SPF", Trust: "untrusted_reported", Verification: "unable_to_verify", Alignment: "not_reported", Limitations: []string{"UPLOADED_HEADERS_CAN_BE_FORGED"}, Raw: raw})
 				found["spf"] = true
 			}
 			break

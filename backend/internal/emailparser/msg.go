@@ -85,7 +85,9 @@ func ParseMSG(data []byte, name string) (out Email, err error) {
 			}
 			if h.Sender != "" {
 				out.Sender = h.Sender
+				out.RawSender = h.RawSender
 			}
+			out.RawSubject = h.RawSubject
 			if h.MessageID != "" {
 				out.MessageID = h.MessageID
 			}
@@ -107,6 +109,8 @@ func ParseMSG(data []byte, name string) (out Email, err error) {
 	if out.Sender == "" {
 		out.Warnings = append(out.Warnings, "MISSING_SENDER")
 	}
+	out.SenderName, out.SenderAddress = SplitAddress(out.Sender)
+	out.Subject = DecodeHeader(out.Subject)
 	total := len(out.Text) + len(out.HTML)
 	if len(m.Attachments) > 32 {
 		return Email{}, fmt.Errorf("ATTACHMENT_LIMIT")

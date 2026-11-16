@@ -66,7 +66,7 @@ func Output(verdict, severity, confidence string) map[string]any {
 		"contextual_findings":         []any{},
 		"authentication_assessment":   map[string]any{"spf": "not_available", "dkim": "not_available", "dmarc": "not_available", "independently_verified": false},
 		"attachment_assessment":       "no_attachments",
-		"uncertainty_notes":           []string{"Mock provider: fixed rules, not a language model."},
+		"uncertainty_notes":           []any{localized("Mock provider: fixed rules, not a language model.", "Тестовый провайдер: фиксированные правила, не языковая модель.", "Сынақ провайдері: тұрақты ережелер, тілдік модель емес.")},
 		"explanations":                localized("Mock assessment.", "Тестовая оценка.", "Сынақ бағасы."),
 		"recommendations":             localized("Review the evidence.", "Проверьте данные.", "Деректерді тексеріңіз."),
 	}

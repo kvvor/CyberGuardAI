@@ -23,10 +23,10 @@ func validOutput() map[string]any {
 		"proposed_verdict": "suspicious", "severity": "medium", "confidence": "medium",
 		"suspected_attack_types": []string{"credential_phishing"}, "social_engineering_patterns": []string{"authority"},
 		"evidence_findings":         []any{map[string]any{"evidence_ids": []string{"sender-1"}, "stance": "supporting", "explanation": loc("Sender is unrelated to the claimed brand")}},
-		"contextual_findings":       []any{map[string]any{"type": "credential_theft", "quote": "confirm your password", "source": "text_body", "reason": "asks for a secret", "confidence": "high"}},
+		"contextual_findings":       []any{map[string]any{"type": "credential_theft", "quote": "confirm your password", "source": "text_body", "reason": loc("asks for a secret"), "confidence": "high"}},
 		"authentication_assessment": map[string]any{"spf": "reported_pass", "dkim": "reported_fail", "dmarc": "not_available", "independently_verified": false},
 		"attachment_assessment":     "no_attachments",
-		"uncertainty_notes":         []string{"headers are unverified"},
+		"uncertainty_notes":         []any{loc("headers are unverified")},
 		"explanations":              loc("Summary"), "recommendations": loc("Do not sign in"),
 	}
 }
@@ -231,10 +231,16 @@ func TestModelCannotInventOrUpgradeEvidence(t *testing.T) {
 		"unknown verdict":       mutate(func(o map[string]any) { o["proposed_verdict"] = "safe" }),
 		"unknown attack type":   mutate(func(o map[string]any) { o["suspected_attack_types"] = []string{"T1566"} }),
 		"missing language":      mutate(func(o map[string]any) { o["explanations"] = map[string]string{"en": "only english"} }),
-		"ungrounded verdict":    mutate(func(o map[string]any) { o["evidence_findings"] = []any{}; o["contextual_findings"] = []any{} }),
-		"extra field":           mutate(func(o map[string]any) { o["risk_score"] = 97 }),
-		"missing field":         mutate(func(o map[string]any) { delete(o, "uncertainty_notes") }),
-		"null field":            mutate(func(o map[string]any) { o["uncertainty_notes"] = nil }),
+		"english-only quote reason": mutate(func(o map[string]any) {
+			o["contextual_findings"].([]any)[0].(map[string]any)["reason"] = map[string]string{"en": "only english"}
+		}),
+		"empty russian uncertainty": mutate(func(o map[string]any) {
+			o["uncertainty_notes"] = []any{map[string]string{"en": "x", "ru": "", "kk": "y"}}
+		}),
+		"ungrounded verdict": mutate(func(o map[string]any) { o["evidence_findings"] = []any{}; o["contextual_findings"] = []any{} }),
+		"extra field":        mutate(func(o map[string]any) { o["risk_score"] = 97 }),
+		"missing field":      mutate(func(o map[string]any) { delete(o, "uncertainty_notes") }),
+		"null field":         mutate(func(o map[string]any) { o["uncertainty_notes"] = nil }),
 	}
 	for name, output := range rejected {
 		if _, e := assess(t, output, sample()); e == nil || e.Error() != "PROVIDER_INVALID_OUTPUT" {

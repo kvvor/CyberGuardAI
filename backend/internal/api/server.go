@@ -109,6 +109,7 @@ func (s *Server) Router() http.Handler {
 	p.HandleFunc("/settings/ai-provider/models", s.providerModels).Methods("GET", "POST")
 	p.HandleFunc("/settings/virustotal", s.providerSettings).Methods("GET", "POST", "DELETE")
 	p.HandleFunc("/settings/virustotal/test", s.providerTest).Methods("POST")
+	p.HandleFunc("/reputation/virustotal", s.lookupHash).Methods("POST")
 	p.HandleFunc("/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 		v := r.Context().Value(key(0)).(auth.Session)
 		if e := s.Auth.Logout(r.Context(), v.Token); e != nil {
