@@ -91,15 +91,28 @@ describe('simple view', () => {
     expect(screen.getByRole('button', { name: 'Show technical details' })).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('uses a categorical verdict indicator without any number or partial fill', () => {
+  it('shows a plain verdict icon with no ring, gauge or number around it', () => {
     show({ ...base, ai_assessment: assessment });
-    const ring = screen.getByRole('img', { name: 'Verdict: Phishing. Severity: High.' });
-    expect(ring.className).toContain('ring-phishing');
-    expect(ring.textContent).toBe('');
-    for (const circle of ring.querySelectorAll('circle')) {
-      expect(circle.getAttribute('stroke-dasharray')).toBeNull();
-      expect(circle.getAttribute('stroke-dashoffset')).toBeNull();
-    }
+    const icon = screen.getByRole('img', { name: 'Verdict: Phishing. Severity: High.' });
+    expect(icon.className).toContain('ring-phishing');
+    expect(icon.textContent).toBe('');
+    // Exactly one graphic, the icon itself: no decorative circle around it.
+    expect(icon.querySelectorAll('svg')).toHaveLength(1);
+    expect(icon.querySelector('.ring-track, .ring-line')).toBeNull();
+    expect(icon.querySelector('[stroke-dasharray], [stroke-dashoffset], progress, [role=progressbar]')).toBeNull();
+    // Verdict text, severity and confidence stay next to it.
+    const head = icon.closest('.verdict-head');
+    expect(head).toHaveTextContent('Phishing');
+    expect(head).toHaveTextContent('Severity: High (level 3 of 4)');
+    expect(head).toHaveTextContent('Model confidence: Medium');
+  });
+
+  it.each(['phishing', 'suspicious', 'legitimate', 'inconclusive'])('uses the same ring-free icon for %s', verdict => {
+    show({ ...base, ai_assessment: { ...assessment, proposed_verdict: verdict } });
+    const icon = document.querySelector('.verdict-ring');
+    expect(icon.className).toContain(`ring-${verdict}`);
+    expect(icon.querySelectorAll('svg')).toHaveLength(1);
+    expect(icon.querySelector('.ring-track, .ring-line')).toBeNull();
   });
 
   it('labels subject, display name and sending address separately and hides empty fields', () => {

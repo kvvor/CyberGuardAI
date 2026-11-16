@@ -5,10 +5,10 @@ import '../i18n/app';
 const ICONS = { phishing: ShieldAlert, suspicious: TriangleAlert, legitimate: ShieldCheck, inconclusive: ShieldQuestion, incomplete: CircleSlash };
 const LEVELS = ['low', 'medium', 'high', 'critical'];
 
-// VerdictRing is a categorical indicator. The ring is always complete and
-// carries no quantity: its colour and icon stand for the verdict category.
-// Severity is shown beside it as a labelled four-step scale ("level 3 of 4"),
-// which is an ordered category, not a measured percentage or probability.
+// The verdict icon: one icon per verdict category, coloured to match. It is
+// purely categorical and carries no ring, gauge or quantity. Severity is shown
+// beside it as a labelled four-step scale, an ordered category and not a
+// percentage or probability.
 export default function VerdictRing({ verdict, severity }) {
   const { t } = useTranslation();
   const kind = ICONS[verdict] ? verdict : 'incomplete';
@@ -19,11 +19,7 @@ export default function VerdictRing({ verdict, severity }) {
     : t('assessmentMissing');
   return (
     <div className={`verdict-ring ring-${kind}`} role="img" aria-label={label}>
-      <svg viewBox="0 0 120 120" aria-hidden="true" focusable="false">
-        <circle className="ring-track" cx="60" cy="60" r="52" />
-        <circle className="ring-line" cx="60" cy="60" r="52" />
-      </svg>
-      <Icon className="ring-icon" size={46} aria-hidden="true" />
+      <Icon className="ring-icon" size={56} strokeWidth={1.75} aria-hidden="true" />
     </div>
   );
 }

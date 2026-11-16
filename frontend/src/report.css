@@ -3,15 +3,11 @@
 
 /* Verdict */
 .verdict-head{display:flex;align-items:center;gap:26px;margin-bottom:18px}
-.verdict-ring{position:relative;width:112px;height:112px;flex-shrink:0;display:grid;place-items:center;color:#a9a5ef}
-.verdict-ring svg{position:absolute;inset:0;width:100%;height:100%}
-.verdict-ring .ring-track{fill:none;stroke:var(--border);stroke-width:8}
-.verdict-ring .ring-line{fill:color-mix(in srgb,currentColor 9%,transparent);stroke:currentColor;stroke-width:8;transform-origin:center;animation:ring-in .5s ease-out both}
+.verdict-ring{flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#a9a5ef;line-height:0}
 .ring-phishing{color:#f87171}
 .ring-suspicious{color:#eab54e}
 .ring-legitimate{color:#34c68c}
 .ring-inconclusive,.ring-incomplete{color:#a9a5ef}
-.verdict-ring .ring-icon{position:relative}
 .verdict-word{margin:0 0 10px;font-size:30px;line-height:1.1}
 .verdict-text h2{margin:0 0 10px}
 .severity-scale{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:14px}
@@ -77,7 +73,11 @@
 .selected-file{display:grid;gap:4px;margin:0;line-height:1.5}
 .file-name{font-size:17px;overflow-wrap:anywhere}
 .ready{color:#34c68c;font-weight:600}
-.file-actions{margin:0;justify-content:center}
+.file-actions{margin:0;justify-content:center;align-items:center;gap:12px}
+/* The picker is a label and "Remove file" is a button: give both the same box
+   so they sit on one line at one height (the drop zone's label spacing used
+   to push the picker down). */
+.file-actions .file-button,.file-actions button{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;height:44px;margin:0;padding:0 18px;line-height:1;font-size:14px;font-weight:600;border-radius:8px}
 .file-button{display:inline-block;margin:0;border:1px solid var(--accent);color:var(--accent);background:var(--raised);padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600}
 .file-button:hover{background:var(--surface)}
 .file-button:focus-within{outline:2px solid var(--accent);outline-offset:4px}
@@ -118,7 +118,6 @@ tbody tr{transition:background .12s}
 tbody tr:hover{background:var(--raised)}
 input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--accent)}
 
-@keyframes ring-in{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -130,7 +129,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-vi
 }
 @media (max-width:760px){
   .verdict-head{flex-direction:column;align-items:flex-start;gap:14px}
-  .verdict-ring{width:88px;height:88px}
+  .verdict-ring svg{width:44px;height:44px}
   .email-fields{grid-template-columns:1fr;gap:2px}
   .email-fields dd{margin-bottom:10px}
   .control-row{flex-wrap:wrap}
@@ -138,4 +137,6 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-vi
   .control-row button{flex:1}
   .hash-form label{min-width:100%}
   .technical-head button{width:100%}
+  .file-actions{width:100%}
+  .file-actions .file-button,.file-actions button{flex:1 1 160px}
 }
